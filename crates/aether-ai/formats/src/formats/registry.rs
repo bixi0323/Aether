@@ -1742,6 +1742,12 @@ fn request_extension_key_is_cross_format_safe(
                 | "user"
                 | "verbosity",
         ) | (
+            // Gemini has no Responses `store` persistence semantics; drop safely.
+            FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+            FormatId::GeminiGenerateContent,
+            "openai_responses" | "openai_cli",
+            "store",
+        ) | (
             FormatId::ClaudeMessages,
             _,
             "claude",
@@ -5743,6 +5749,38 @@ mod tests {
             super::FormatError::InvalidTargetField { ref field, .. }
                 if field == "prompt_cache_retention"
         ));
+    }
+
+    #[test]
+    fn openai_responses_store_is_droppable_for_gemini_generate_content() {
+        for store in [json!(true), json!(false)] {
+            let body = json!({
+                "model": "gemini-3.8-flash-high",
+                "input": "hello",
+                "store": store,
+            });
+            let converted = convert_request_pure(
+                "openai:responses",
+                "gemini:generate_content",
+                &body,
+            )
+            .unwrap_or_else(|err| panic!("store={store} should convert, got {err:?}"));
+            assert!(
+                converted.value.get("store").is_none(),
+                "Gemini request must not retain Responses store"
+            );
+        }
+
+        let converted = convert_request_pure(
+            "openai:responses",
+            "gemini:generate_content",
+            &json!({
+                "model": "gemini-3.8-flash-high",
+                "input": "hello",
+            }),
+        )
+        .expect("omitted store should convert");
+        assert!(converted.value.get("store").is_none());
     }
 
     #[test]
