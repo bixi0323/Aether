@@ -1,0 +1,63 @@
+﻿name: Build PR-818 image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/bixi0323/aether
+  TAG: pr-818
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch Dockerfile for GitHub runners
+        run: |
+          set -euo pipefail
+          sed -i '1s|^# syntax=.*|# syntax=docker/dockerfile:1|' Dockerfile.app.local
+          # Prefer official bases on GitHub-hosted runners
+          sed -i 's|docker.m.daocloud.io/library/node:22-slim|node:22-slim|g' Dockerfile.app.local
+          sed -i 's|docker.m.daocloud.io/library/rust:${RUST_VERSION}-slim|rust:${RUST_VERSION}-slim|g' Dockerfile.app.local
+          # Prefer default npm registry outside China mirrors
+          sed -i '/npm config set registry/d' Dockerfile.app.local
+          # Prefer default Debian mirrors
+          sed -i '/mirrors.tuna.tsinghua.edu.cn/d' Dockerfile.app.local || true
+          head -40 Dockerfile.app.local
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.app.local
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:pr-818-${{ github.sha }}
+          build-args: |
+            AETHER_BUILD_VERSION=pr-818-${{ github.sha }}
+            NODE_BASE_IMAGE=node:22-slim
+            RUST_BASE_IMAGE=rust:1.95.0-slim
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
