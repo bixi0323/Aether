@@ -286,19 +286,23 @@ where
             return Ok(AiAttemptExecutionOutcome::Responded(response));
         }
         prewarm_direct_reqwest_candidate_client(plan);
+        let provider_admission =
+            crate::provider_pool_demand::prepare_provider_execution_admission(self.state, plan)
+                .await?;
         let _permit = acquire_upstream_execution_gate(self.state, self.trace_id).await?;
         let upstream_execution_gate_held_started_at = std::time::Instant::now();
-        let mut execution = execute_execution_runtime_sync_with_retry_scope(
-            self.state,
-            self.parts.uri.path(),
-            plan.clone(),
-            self.trace_id,
-            self.decision,
-            self.plan_kind,
-            attempt.report_kind(),
-            report_context,
-        )
-        .await?;
+        let execution = provider_admission
+            .scope(execute_execution_runtime_sync_with_retry_scope(
+                self.state,
+                self.parts.uri.path(),
+                plan.clone(),
+                self.trace_id,
+                self.decision,
+                self.plan_kind,
+                attempt.report_kind(),
+                report_context,
+            ))
+            .await?;
         observe_gateway_stage_ms(
             "upstream_execution_gate_held",
             upstream_execution_gate_held_started_at
@@ -1052,27 +1056,31 @@ where
             LocalFailoverDecision::StopLocalFailover
         );
         let watchdog_started_at = std::time::Instant::now();
-        let execution = execute_stream_candidate_with_watchdog(
-            self.state,
-            self.trace_id,
-            self.plan_kind,
-            plan,
-            watchdog_report_context,
-            stop_on_transport_errors,
-            move || async move {
-                execute_execution_runtime_stream_with_retry_scope(
-                    &execution_state,
-                    execution_plan,
-                    execution_trace_id.as_str(),
-                    &execution_decision,
-                    execution_plan_kind.as_str(),
-                    execution_report_kind,
-                    report_context,
-                )
-                .await
-            },
-        )
-        .await?;
+        let provider_admission =
+            crate::provider_pool_demand::prepare_provider_execution_admission(self.state, plan)
+                .await?;
+        let execution = provider_admission
+            .scope(execute_stream_candidate_with_watchdog(
+                self.state,
+                self.trace_id,
+                self.plan_kind,
+                plan,
+                watchdog_report_context,
+                stop_on_transport_errors,
+                move || async move {
+                    execute_execution_runtime_stream_with_retry_scope(
+                        &execution_state,
+                        execution_plan,
+                        execution_trace_id.as_str(),
+                        &execution_decision,
+                        execution_plan_kind.as_str(),
+                        execution_report_kind,
+                        report_context,
+                    )
+                    .await
+                },
+            ))
+            .await?;
         let mut execution = match execution {
             StreamCandidateWatchdogOutcome::TransportTimeout => {
                 AiAttemptExecutionOutcome::Responded(
@@ -1399,19 +1407,34 @@ where
     };
     let permit_hold = permit.map(UpstreamExecutionPermitHold::new);
     let watchdog_started_at = std::time::Instant::now();
+    let watchdog_budget_started_at = Instant::now();
     let watchdog_progress = StreamCandidateWatchdogProgress::shared();
     let execution = watchdog_progress.clone().scope(execute());
     tokio::pin!(execution);
     let deadline = tokio::time::sleep(timeout_duration);
     tokio::pin!(deadline);
-    let execution_result = tokio::select! {
-        biased;
-        result = &mut execution => Some(result),
-        () = &mut deadline => {
-            if watchdog_progress.terminal_started() {
-                Some(execution.await)
-            } else {
-                None
+    let execution_result = loop {
+        tokio::select! {
+            biased;
+            result = &mut execution => break Some(result),
+            () = &mut deadline => {
+                if watchdog_progress.terminal_started() {
+                    break Some(execution.await);
+                }
+                if watchdog_progress.queue_waiting() {
+                    tokio::select! {
+                        biased;
+                        result = &mut execution => break Some(result),
+                        () = watchdog_progress.queue_wait_finished() => {}
+                    }
+                }
+                let remaining = timeout_duration
+                    .saturating_add(watchdog_progress.queue_wait_elapsed())
+                    .saturating_sub(watchdog_budget_started_at.elapsed());
+                if remaining.is_zero() {
+                    break None;
+                }
+                deadline.as_mut().reset(Instant::now() + remaining);
             }
         }
     };
@@ -2421,6 +2444,207 @@ mod tests {
             .as_deref()
             .is_some_and(|message| message == "Stream first byte timeout"));
         assert_eq!(record.candidate_index, 2);
+    }
+
+    async fn assert_stream_candidate_retry_gets_fresh_first_byte_budget(
+        provider_id: &str,
+        key_id: &str,
+        first_byte_ms: u64,
+    ) {
+        let writer = TestRequestCandidateWriter::default();
+        let plan = test_plan(Some(ExecutionTimeouts {
+            first_byte_ms: Some(100),
+            ..ExecutionTimeouts::default()
+        }));
+        let report_context = test_report_context();
+
+        let result = execute_stream_candidate_with_watchdog(
+            &writer,
+            "trace_watchdog_retry_budget",
+            "claude_cli_stream",
+            &plan,
+            Some(&report_context),
+            false,
+            || {
+                std::future::pending::<
+                    Result<AiAttemptExecutionOutcome<Response<Body>>, GatewayError>,
+                >()
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Ok(StreamCandidateWatchdogOutcome::Executed(
+                AiAttemptExecutionOutcome::Retry {
+                    scope: AiAttemptRetryScope::Candidate,
+                    fallback_response: None,
+                }
+            ))
+        ));
+
+        let mut next_plan = plan.clone();
+        next_plan.candidate_id = Some("cand_watchdog_retry".to_string());
+        next_plan.provider_id = provider_id.to_string();
+        next_plan.key_id = key_id.to_string();
+        next_plan.timeouts = Some(ExecutionTimeouts {
+            first_byte_ms: Some(first_byte_ms),
+            ..ExecutionTimeouts::default()
+        });
+        let mut next_report_context = report_context.clone();
+        next_report_context["candidate_id"] = json!("cand_watchdog_retry");
+        next_report_context["candidate_index"] = json!(3);
+
+        let result = execute_stream_candidate_with_watchdog(
+            &writer,
+            "trace_watchdog_retry_budget",
+            "claude_cli_stream",
+            &next_plan,
+            Some(&next_report_context),
+            false,
+            || async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok(AiAttemptExecutionOutcome::Responded(Response::new(
+                    Body::from("retry succeeded"),
+                )))
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(StreamCandidateWatchdogOutcome::Executed(
+                    AiAttemptExecutionOutcome::Responded(_)
+                ))
+            ),
+            "candidate {provider_id}/{key_id} must receive its own {first_byte_ms} ms budget"
+        );
+
+        let records = writer.records.lock().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, plan.candidate_id.as_deref().unwrap());
+        assert_eq!(records[0].status, RequestCandidateStatus::Failed);
+        assert_eq!(
+            records[0].error_type.as_deref(),
+            Some("local_stream_candidate_watchdog_timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_candidate_watchdog_failover_gets_fresh_first_byte_budget() {
+        for first_byte_ms in [100, 75, 150] {
+            assert_stream_candidate_retry_gets_fresh_first_byte_budget(
+                "provider_next",
+                "key_next",
+                first_byte_ms,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_candidate_watchdog_same_provider_retries_get_fresh_first_byte_budget() {
+        for key_id in ["key_next", "key_id"] {
+            assert_stream_candidate_retry_gets_fresh_first_byte_budget("provider_id", key_id, 100)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_candidate_watchdog_starts_first_byte_budget_after_admission() {
+        let writer = TestRequestCandidateWriter::with_upstream_gate(1, Duration::from_secs(1));
+        let held_permit = writer
+            .upstream_gate
+            .as_ref()
+            .expect("test gate should exist")
+            .try_acquire()
+            .expect("test gate permit should acquire");
+        let plan = test_plan(Some(ExecutionTimeouts {
+            first_byte_ms: Some(50),
+            ..ExecutionTimeouts::default()
+        }));
+        let report_context = test_report_context();
+
+        let (result, ()) = tokio::join!(
+            execute_stream_candidate_with_watchdog(
+                &writer,
+                "trace_watchdog_admission_budget",
+                "claude_cli_stream",
+                &plan,
+                Some(&report_context),
+                false,
+                || async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok(AiAttemptExecutionOutcome::Responded(Response::new(
+                        Body::from("admitted candidate succeeded"),
+                    )))
+                },
+            ),
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                drop(held_permit);
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Ok(StreamCandidateWatchdogOutcome::Executed(
+                AiAttemptExecutionOutcome::Responded(_)
+            ))
+        ));
+        assert!(writer.records.lock().await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_candidate_watchdog_excludes_queue_wait_and_resumes_timeout() {
+        for stall in [false, true] {
+            let writer = TestRequestCandidateWriter::default();
+            let plan = test_plan(Some(ExecutionTimeouts {
+                first_byte_ms: Some(20),
+                ..ExecutionTimeouts::default()
+            }));
+            let context = test_report_context();
+            let started = Instant::now();
+            let outcome = execute_stream_candidate_with_watchdog(
+                &writer,
+                "trace-queue-watchdog",
+                "claude_cli_stream",
+                &plan,
+                Some(&context),
+                false,
+                || async {
+                    let queue_wait = StreamCandidateWatchdogProgress::current()
+                        .unwrap()
+                        .begin_queue_wait();
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    drop(queue_wait);
+                    tokio::time::sleep(Duration::from_millis(if stall { 100 } else { 10 })).await;
+                    Ok(AiAttemptExecutionOutcome::Responded(Response::new(
+                        Body::empty(),
+                    )))
+                },
+            )
+            .await
+            .unwrap();
+            if stall {
+                assert!(matches!(
+                    outcome,
+                    StreamCandidateWatchdogOutcome::Executed(
+                        AiAttemptExecutionOutcome::Retry { .. }
+                    )
+                ));
+                assert_eq!(started.elapsed(), Duration::from_millis(120));
+                assert_eq!(writer.records.lock().await.len(), 1);
+            } else {
+                assert!(matches!(
+                    outcome,
+                    StreamCandidateWatchdogOutcome::Executed(AiAttemptExecutionOutcome::Responded(
+                        _
+                    ))
+                ));
+                assert_eq!(started.elapsed(), Duration::from_millis(110));
+                assert!(writer.records.lock().await.is_empty());
+            }
+        }
     }
 
     #[tokio::test]

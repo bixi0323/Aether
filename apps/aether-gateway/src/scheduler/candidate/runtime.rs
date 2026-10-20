@@ -20,6 +20,7 @@ use super::{SchedulerMinimalCandidateSelectionCandidate, SchedulerRuntimeState};
 pub(super) use aether_scheduler_core::should_skip_provider_quota;
 
 pub(super) struct CandidateRuntimeSelectionSnapshot {
+    queue_enabled: bool,
     pub(super) recent_candidates: Vec<StoredRequestCandidate>,
     pub(super) provider_concurrent_limits: BTreeMap<String, usize>,
     pub(super) provider_key_rpm_states: BTreeMap<String, StoredProviderCatalogKey>,
@@ -70,6 +71,7 @@ pub(super) async fn read_candidate_runtime_selection_snapshot(
         read_provider_key_rpm_reset_at_map(state, candidates, now_unix_secs);
 
     Ok(CandidateRuntimeSelectionSnapshot {
+        queue_enabled: state.provider_concurrency_queue_enabled(),
         recent_candidates,
         provider_concurrent_limits,
         provider_key_rpm_states,
@@ -197,7 +199,7 @@ pub(super) fn current_candidate_runtime_skip_reason(
         })
         .flatten();
 
-    candidate_runtime_skip_reason_with_state(CandidateRuntimeSelectabilityInput {
+    let input = CandidateRuntimeSelectabilityInput {
         candidate,
         recent_candidates: &snapshot.recent_candidates,
         provider_concurrent_limits: &snapshot.provider_concurrent_limits,
@@ -218,7 +220,16 @@ pub(super) fn current_candidate_runtime_skip_reason(
                 .unwrap_or(false),
         enforce_key_circuit_breaker: !pool_group,
         rpm_reset_at,
-    })
+    };
+    let reason = candidate_runtime_skip_reason_with_state(input);
+    if snapshot.queue_enabled
+        && crate::provider_concurrency_queue::is_concurrency_skip_reason(reason)
+    {
+        aether_scheduler_core::candidate_runtime_non_concurrency_skip_reason_with_state(input)
+            .or(reason)
+    } else {
+        reason
+    }
 }
 
 pub(super) async fn read_provider_concurrent_limits(
@@ -376,7 +387,7 @@ fn read_key_oauth_invalid_map(
         .collect()
 }
 
-fn key_requires_oauth_reauth(
+pub(crate) fn key_requires_oauth_reauth(
     key: &StoredProviderCatalogKey,
     provider_type: &str,
     now_unix_secs: u64,

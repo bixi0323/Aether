@@ -311,6 +311,9 @@ impl AppState {
             background_data_isolated: false,
             runtime_state: runtime_state.clone(),
             usage_runtime: Arc::new(usage::UsageRuntime::disabled()),
+            provider_concurrency_queue: Arc::new(
+                crate::provider_concurrency_queue::ProviderConcurrencyQueue::from_env(),
+            ),
             video_tasks: Arc::new(VideoTaskService::new(
                 VideoTaskTruthSourceMode::PythonSyncReport,
             )),
@@ -1770,16 +1773,13 @@ impl AppState {
     pub(crate) fn set_local_execution_runtime_miss_diagnostic(
         &self,
         trace_id: &str,
-        diagnostic: LocalExecutionRuntimeMissDiagnostic,
+        mut diagnostic: LocalExecutionRuntimeMissDiagnostic,
     ) {
-        if self
-            .local_execution_runtime_miss_diagnostics
-            .get(trace_id)
-            .is_some_and(|existing| {
-                should_preserve_runtime_miss_diagnostic(existing.value(), &diagnostic)
-            })
-        {
-            return;
+        if let Some(existing) = self.local_execution_runtime_miss_diagnostics.get(trace_id) {
+            diagnostic.execution_admitted |= existing.execution_admitted;
+            if should_preserve_runtime_miss_diagnostic(existing.value(), &diagnostic) {
+                return;
+            }
         }
         self.local_execution_runtime_miss_diagnostics
             .insert(trace_id.to_string(), diagnostic);
@@ -3825,7 +3825,8 @@ fn should_preserve_runtime_miss_diagnostic(
 fn runtime_miss_diagnostic_has_candidate_signal(
     diagnostic: &LocalExecutionRuntimeMissDiagnostic,
 ) -> bool {
-    diagnostic.candidate_count.unwrap_or(0) > 0
+    diagnostic.execution_admitted
+        || diagnostic.candidate_count.unwrap_or(0) > 0
         || diagnostic.skipped_candidate_count.unwrap_or(0) > 0
         || !diagnostic.skip_reasons.is_empty()
 }

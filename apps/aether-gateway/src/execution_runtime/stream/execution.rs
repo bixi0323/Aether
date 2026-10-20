@@ -3777,12 +3777,12 @@ async fn execute_execution_runtime_stream_inner(
     let mut provider_pool_in_flight_guard =
         match acquire_provider_pool_execution_guard(state, &plan).await? {
             ProviderPoolInFlightAdmission::Acquired(guard) => guard,
-            ProviderPoolInFlightAdmission::Saturated { limit } => {
-                record_local_runtime_candidate_skip_reason(
-                    state,
-                    trace_id,
-                    "provider_key_concurrency_limit_reached",
-                );
+            ProviderPoolInFlightAdmission::Rejected {
+                reason,
+                status,
+                message,
+            } => {
+                record_local_runtime_candidate_skip_reason(state, trace_id, reason);
                 if let Some(retry_scope) = retry_scope_out.as_deref_mut() {
                     *retry_scope = AiAttemptRetryScope::Candidate;
                 }
@@ -3792,11 +3792,9 @@ async fn execute_execution_runtime_stream_inner(
                         snapshot,
                         SchedulerRequestCandidateStatusUpdate {
                             status: RequestCandidateStatus::Skipped,
-                            status_code: Some(http::StatusCode::TOO_MANY_REQUESTS.as_u16()),
-                            error_type: Some("provider_key_concurrency_limit_reached".to_string()),
-                            error_message: Some(format!(
-                                "provider key concurrency limit reached: {limit}"
-                            )),
+                            status_code: Some(status),
+                            error_type: Some(reason.to_string()),
+                            error_message: Some(message),
                             latency_ms: Some(0),
                             started_at_unix_ms: Some(candidate_started_unix_secs),
                             finished_at_unix_ms: Some(candidate_started_unix_secs),

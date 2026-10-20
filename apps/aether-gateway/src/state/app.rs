@@ -372,6 +372,8 @@ pub struct AppState {
     pub(crate) background_data_isolated: bool,
     pub(crate) runtime_state: Arc<RuntimeState>,
     pub(crate) usage_runtime: Arc<usage::UsageRuntime>,
+    pub(crate) provider_concurrency_queue:
+        Arc<crate::provider_concurrency_queue::ProviderConcurrencyQueue>,
     pub(crate) video_tasks: Arc<VideoTaskService>,
     pub(crate) video_task_poller: Option<VideoTaskPollerConfig>,
     pub(crate) frontdoor_runtime_guards: Arc<FrontdoorRuntimeGuardConfig>,

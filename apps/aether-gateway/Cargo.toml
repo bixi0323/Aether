@@ -102,5 +102,6 @@ tikv-jemallocator = { version = "0.6", optional = true }
 tikv-jemalloc-sys = { version = "0.6", optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 aether-test-support.workspace = true
 tracing-subscriber.workspace = true

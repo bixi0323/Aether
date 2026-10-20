@@ -29,29 +29,23 @@ impl ResponsesWebSocketTurnAdmission {
         plan: &ExecutionPlan,
         trace_id: &str,
     ) -> Result<Self, GatewayError> {
-        let upstream_execution = acquire_upstream_execution_gate(state, trace_id).await?;
-        let upstream_target = match state
-            .upstream_target_admission
-            .acquire(plan, trace_id)
-            .await
-        {
-            Ok(permit) => permit,
-            Err(error) => {
-                drop(upstream_execution);
-                return Err(error);
-            }
-        };
         let provider_pool = match acquire_provider_pool_execution_guard(state, plan).await? {
             ProviderPoolInFlightAdmission::Acquired(guard) => guard,
-            ProviderPoolInFlightAdmission::Saturated { limit } => {
-                drop(upstream_target);
-                drop(upstream_execution);
+            ProviderPoolInFlightAdmission::Rejected {
+                status, message, ..
+            } => {
                 return Err(GatewayError::Client {
-                    status: http::StatusCode::TOO_MANY_REQUESTS,
-                    message: format!("上游账号并发已达上限 ({limit})"),
+                    status: http::StatusCode::from_u16(status)
+                        .unwrap_or(http::StatusCode::SERVICE_UNAVAILABLE),
+                    message,
                 });
             }
         };
+        let upstream_execution = acquire_upstream_execution_gate(state, trace_id).await?;
+        let upstream_target = state
+            .upstream_target_admission
+            .acquire(plan, trace_id)
+            .await?;
 
         Ok(Self {
             upstream_execution,

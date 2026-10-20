@@ -4,7 +4,6 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aether_contracts::ExecutionPlan;
 use aether_runtime_state::{
     RuntimeSemaphoreConfig, RuntimeSemaphoreError, RuntimeSemaphorePermit, RuntimeState,
 };
@@ -14,7 +13,13 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::{AppState, GatewayError};
+use crate::AppState;
+
+mod admission;
+pub(crate) use admission::{
+    acquire_provider_pool_execution_guard, acquire_provider_pool_execution_guard_unobserved,
+    prepare_provider_execution_admission,
+};
 
 const PROVIDER_POOL_IN_FLIGHT_TOKENS_PREFIX: &str = "ap:provider_pool:in_flight";
 const PROVIDER_KEY_CONCURRENCY_GATE: &str = "provider_key";
@@ -49,12 +54,17 @@ pub(crate) struct ProviderPoolDemandSnapshot {
 pub(crate) struct ProviderPoolInFlightGuard {
     kind: ProviderPoolInFlightGuardKind,
     provider_key_permit: Option<RuntimeSemaphorePermit>,
+    concurrency_permits: Vec<RuntimeSemaphorePermit>,
     released: bool,
 }
 
 pub(crate) enum ProviderPoolInFlightAdmission {
     Acquired(Option<ProviderPoolInFlightGuard>),
-    Saturated { limit: usize },
+    Rejected {
+        reason: &'static str,
+        status: u16,
+        message: String,
+    },
 }
 
 enum ProviderPoolInFlightGuardKind {
@@ -118,6 +128,11 @@ impl ProviderPoolInFlightGuard {
             }
         }
         if self.released {
+            for permit in self.concurrency_permits.drain(..) {
+                if let Err(error) = permit.release().await {
+                    debug!(error = ?error, "gateway provider concurrency permit release failed");
+                }
+            }
             if let Some(provider_key_permit) = self.provider_key_permit.take() {
                 if let Err(err) = provider_key_permit.release().await {
                     debug!(
@@ -358,6 +373,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
             provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
                 kind: ProviderPoolInFlightGuardKind::Disabled,
                 provider_key_permit: Some(provider_key_permit),
+                concurrency_permits: Vec::new(),
                 released: false,
             }),
         );
@@ -369,6 +385,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
                 provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
                     kind: ProviderPoolInFlightGuardKind::Disabled,
                     provider_key_permit: Some(provider_key_permit),
+                    concurrency_permits: Vec::new(),
                     released: false,
                 }),
             );
@@ -381,6 +398,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
                     counter,
                 },
                 provider_key_permit,
+                concurrency_permits: Vec::new(),
                 released: false,
             }));
         }
@@ -392,6 +410,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
                     counter,
                 },
                 provider_key_permit,
+                concurrency_permits: Vec::new(),
                 released: false,
             }));
         }
@@ -417,6 +436,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
                 provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
                     kind: ProviderPoolInFlightGuardKind::Disabled,
                     provider_key_permit: Some(provider_key_permit),
+                    concurrency_permits: Vec::new(),
                     released: false,
                 }),
             );
@@ -431,6 +451,7 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
                 provider_key_permit.map(|provider_key_permit| ProviderPoolInFlightGuard {
                     kind: ProviderPoolInFlightGuardKind::Disabled,
                     provider_key_permit: Some(provider_key_permit),
+                    concurrency_permits: Vec::new(),
                     released: false,
                 }),
             );
@@ -454,38 +475,9 @@ pub(crate) async fn acquire_provider_pool_in_flight_guard_with_key_limit(
             renew_handle: Some(renew_handle),
         },
         provider_key_permit,
+        concurrency_permits: Vec::new(),
         released: false,
     }))
-}
-
-pub(crate) async fn acquire_provider_pool_execution_guard(
-    state: &AppState,
-    plan: &ExecutionPlan,
-) -> Result<ProviderPoolInFlightAdmission, GatewayError> {
-    let concurrent_limit = state
-        .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
-        .await?
-        .into_iter()
-        .find(|key| key.id == plan.key_id)
-        .and_then(|key| key.concurrent_limit)
-        .filter(|limit| *limit > 0)
-        .and_then(|limit| usize::try_from(limit).ok());
-    match acquire_provider_pool_in_flight_guard_with_key_limit(
-        state.runtime_state.clone(),
-        &plan.provider_id,
-        &plan.request_id,
-        plan.candidate_id.as_deref(),
-        &plan.key_id,
-        concurrent_limit,
-    )
-    .await
-    {
-        Ok(guard) => Ok(ProviderPoolInFlightAdmission::Acquired(guard)),
-        Err(RuntimeSemaphoreError::Saturated { limit, .. }) => {
-            Ok(ProviderPoolInFlightAdmission::Saturated { limit })
-        }
-        Err(error) => Err(GatewayError::Internal(error.to_string())),
-    }
 }
 
 pub(crate) async fn provider_pool_live_in_flight_count(

@@ -32,6 +32,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub(crate) use self::runtime::key_requires_oauth_reauth;
 pub(crate) use self::selection::{
     is_auth_api_key_concurrency_limit_skip_reason, SchedulerSkippedCandidate,
     API_KEY_CONCURRENCY_LIMIT_SKIP_REASON, AUTH_API_KEY_CONCURRENCY_LIMIT_SKIP_REASON,
