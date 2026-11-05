@@ -4541,7 +4541,7 @@ mod tests {
     }
 
     #[test]
-    fn pure_claude_to_openai_chat_blocks_unknown_tool_result_blocks() {
+    fn pure_claude_to_openai_chat_flattens_search_result_tool_result_blocks() {
         let body = json!({
             "model": "claude-sonnet",
             "messages": [{
@@ -4551,6 +4551,49 @@ mod tests {
                     "tool_use_id": "toolu_123",
                     "content": [{
                         "type": "search_result",
+                        "title": "Example result",
+                        "source": "https://example.com/result",
+                        "content": [{
+                            "type": "text",
+                            "text": "Search result body."
+                        }]
+                    }]
+                }]
+            }],
+            "max_tokens": 64
+        });
+
+        let pure = convert_request_pure("claude:messages", "openai:chat", &body)
+            .expect("Claude search_result blocks should degrade to Chat text")
+            .value;
+        let runtime = convert_request(
+            "claude:messages",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime conversion should match pure conversion");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["messages"][0]["role"], "tool");
+        assert_eq!(pure["messages"][0]["tool_call_id"], "toolu_123");
+        assert_eq!(
+            pure["messages"][0]["content"],
+            "Search result: Example result\nSource: https://example.com/result\nSearch result body."
+        );
+    }
+
+    #[test]
+    fn pure_claude_to_openai_chat_blocks_unknown_tool_result_blocks() {
+        let body = json!({
+            "model": "claude-sonnet",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": [{
+                        "type": "future_result",
                         "title": "result"
                     }]
                 }]

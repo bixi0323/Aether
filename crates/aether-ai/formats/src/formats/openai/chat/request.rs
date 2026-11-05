@@ -667,6 +667,7 @@ fn claude_tool_result_part_is_openai_chat_representable(part: &Value) -> bool {
         .unwrap_or_default()
     {
         "text" => true,
+        "search_result" => true,
         "image" => claude_image_block_is_openai_chat_representable(part_object),
         "document" | "file" => claude_document_block_is_openai_chat_representable(part_object),
         _ => false,

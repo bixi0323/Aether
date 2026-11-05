@@ -4187,9 +4187,49 @@ fn anthropic_tool_result_block_to_openai_chat_part(part: &Value) -> Option<Value
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
         )),
+        "search_result" => Some(openai_text_part(anthropic_search_result_block_to_text(
+            part_object,
+        ))),
         "image" => anthropic_image_block_to_openai_chat_part(part_object),
         "document" | "file" => anthropic_document_block_to_openai_chat_part(part_object),
         _ => None,
+    }
+}
+
+fn anthropic_search_result_block_to_text(block: &Map<String, Value>) -> String {
+    let title = block.get("title").and_then(Value::as_str).unwrap_or_default();
+    let source = block.get("source").and_then(Value::as_str).unwrap_or_default();
+    let content = block
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|parts| anthropic_text_blocks_to_string(parts))
+        .or_else(|| {
+            block
+                .get("content")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| {
+            block
+                .get("content")
+                .map(Value::to_string)
+                .unwrap_or_default()
+        });
+
+    let mut sections = Vec::new();
+    if !title.trim().is_empty() {
+        sections.push(format!("Search result: {title}"));
+    }
+    if !source.trim().is_empty() {
+        sections.push(format!("Source: {source}"));
+    }
+    if !content.trim().is_empty() {
+        sections.push(content);
+    }
+    if sections.is_empty() {
+        Value::Object(block.clone()).to_string()
+    } else {
+        sections.join("\n")
     }
 }
 
