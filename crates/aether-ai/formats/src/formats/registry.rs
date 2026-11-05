@@ -1668,7 +1668,10 @@ fn request_extension_key_is_cross_format_safe(
     if location == "messages[]"
         && matches!(
             (source, target),
-            (FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact, FormatId::OpenAiChat)
+            (
+                FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+                FormatId::OpenAiChat
+            )
         )
         && matches!(namespace, "openai_responses" | "openai_cli")
         && matches!(key, "id" | "status")
@@ -2806,12 +2809,16 @@ fn validate_claude_cross_format_request(body: &Value, target: FormatId) -> Resul
     }
 
     match target {
-        FormatId::OpenAiChat if claude_request_contains_tool_result_content_array(body) => {
+        FormatId::OpenAiChat
+            if claude_request_contains_unrepresentable_tool_result_content_for_openai_chat(
+                body,
+            ) =>
+        {
             return Err(FormatError::LossyConversionBlocked {
                 source_format: FormatId::ClaudeMessages.as_str().to_string(),
                 target_format: target.as_str().to_string(),
                 field: "messages[].content[].tool_result.content".to_string(),
-                reason: "OpenAI Chat tool messages cannot losslessly preserve Claude multi-block tool_result content".to_string(),
+                reason: "OpenAI Chat tool messages cannot represent one or more Claude tool_result content blocks".to_string(),
             });
         }
         FormatId::OpenAiChat => {}
@@ -2824,12 +2831,14 @@ fn validate_claude_cross_format_request(body: &Value, target: FormatId) -> Resul
                     reason: "OpenAI Responses request input cannot losslessly preserve Claude thinking blocks".to_string(),
                 });
             }
-            if claude_request_contains_tool_result_content_array(body) {
+            if claude_request_contains_unrepresentable_tool_result_content_for_openai_responses(
+                body,
+            ) {
                 return Err(FormatError::LossyConversionBlocked {
                     source_format: FormatId::ClaudeMessages.as_str().to_string(),
                     target_format: target.as_str().to_string(),
                     field: "messages[].content[].tool_result.content".to_string(),
-                    reason: "OpenAI Responses function_call_output cannot losslessly preserve Claude multi-block tool_result content".to_string(),
+                    reason: "OpenAI Responses function_call_output cannot represent one or more Claude tool_result content blocks".to_string(),
                 });
             }
         }
@@ -3119,30 +3128,6 @@ fn claude_request_contains_block_type(body: &Value, expected_type: &str) -> bool
                         .get("type")
                         .and_then(Value::as_str)
                         .is_some_and(|block_type| block_type.eq_ignore_ascii_case(expected_type))
-                })
-            })
-    })
-}
-
-fn claude_request_contains_tool_result_content_array(body: &Value) -> bool {
-    let Some(messages) = body
-        .as_object()
-        .and_then(|object| object.get("messages"))
-        .and_then(Value::as_array)
-    else {
-        return false;
-    };
-    messages.iter().any(|message| {
-        message
-            .get("content")
-            .and_then(Value::as_array)
-            .is_some_and(|blocks| {
-                blocks.iter().any(|block| {
-                    block
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|block_type| block_type.eq_ignore_ascii_case("tool_result"))
-                        && block.get("content").is_some_and(Value::is_array)
                 })
             })
     })
@@ -4518,7 +4503,7 @@ mod tests {
     }
 
     #[test]
-    fn pure_claude_to_openai_chat_blocks_structured_tool_result_loss() {
+    fn pure_claude_to_openai_chat_flattens_text_tool_result_blocks() {
         let body = json!({
             "model": "claude-sonnet",
             "messages": [{
@@ -4538,8 +4523,43 @@ mod tests {
             "max_tokens": 64
         });
 
+        let pure = convert_request_pure("claude:messages", "openai:chat", &body)
+            .expect("Claude text tool_result blocks should degrade to Chat text")
+            .value;
+        let runtime = convert_request(
+            "claude:messages",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime conversion should match pure conversion");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["messages"][0]["role"], "tool");
+        assert_eq!(pure["messages"][0]["tool_call_id"], "toolu_123");
+        assert_eq!(pure["messages"][0]["content"], "first\n\nsecond");
+    }
+
+    #[test]
+    fn pure_claude_to_openai_chat_blocks_unknown_tool_result_blocks() {
+        let body = json!({
+            "model": "claude-sonnet",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": [{
+                        "type": "search_result",
+                        "title": "result"
+                    }]
+                }]
+            }],
+            "max_tokens": 64
+        });
+
         let error = convert_request_pure("claude:messages", "openai:chat", &body)
-            .expect_err("Claude tool_result block arrays should fail closed for Chat");
+            .expect_err("unknown Claude tool_result blocks should fail closed for Chat");
 
         assert!(matches!(
             error,
