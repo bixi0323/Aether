@@ -31,30 +31,24 @@ INSERT INTO usage_http_audits (
 )
 ON CONFLICT (request_id)
 DO UPDATE SET
-  request_headers = COALESCE(EXCLUDED.request_headers, usage_http_audits.request_headers),
-  provider_request_headers = COALESCE(
-    EXCLUDED.provider_request_headers,
-    usage_http_audits.provider_request_headers
-  ),
-  response_headers = COALESCE(EXCLUDED.response_headers, usage_http_audits.response_headers),
-  client_response_headers = COALESCE(
-    EXCLUDED.client_response_headers,
-    usage_http_audits.client_response_headers
-  ),
+  request_headers = EXCLUDED.request_headers,
+  provider_request_headers = EXCLUDED.provider_request_headers,
+  response_headers = EXCLUDED.response_headers,
+  client_response_headers = EXCLUDED.client_response_headers,
   request_body_ref = CASE
-    WHEN EXCLUDED.request_body_state = 'none' THEN NULL
+    WHEN EXCLUDED.request_body_state IN ('none', 'disabled') THEN NULL
     ELSE COALESCE(EXCLUDED.request_body_ref, usage_http_audits.request_body_ref)
   END,
   provider_request_body_ref = CASE
-    WHEN EXCLUDED.provider_request_body_state = 'none' THEN NULL
+    WHEN EXCLUDED.provider_request_body_state IN ('none', 'disabled') THEN NULL
     ELSE COALESCE(EXCLUDED.provider_request_body_ref, usage_http_audits.provider_request_body_ref)
   END,
   response_body_ref = CASE
-    WHEN EXCLUDED.response_body_state = 'none' THEN NULL
+    WHEN EXCLUDED.response_body_state IN ('none', 'disabled') THEN NULL
     ELSE COALESCE(EXCLUDED.response_body_ref, usage_http_audits.response_body_ref)
   END,
   client_response_body_ref = CASE
-    WHEN EXCLUDED.client_response_body_state = 'none' THEN NULL
+    WHEN EXCLUDED.client_response_body_state IN ('none', 'disabled') THEN NULL
     ELSE COALESCE(
       EXCLUDED.client_response_body_ref,
       usage_http_audits.client_response_body_ref
@@ -79,10 +73,10 @@ DO UPDATE SET
   body_capture_mode = CASE
     WHEN EXCLUDED.body_capture_mode = 'none'
       AND (
-        EXCLUDED.request_body_state = 'none'
-        OR EXCLUDED.provider_request_body_state = 'none'
-        OR EXCLUDED.response_body_state = 'none'
-        OR EXCLUDED.client_response_body_state = 'none'
+        EXCLUDED.request_body_state IN ('none', 'disabled')
+        OR EXCLUDED.provider_request_body_state IN ('none', 'disabled')
+        OR EXCLUDED.response_body_state IN ('none', 'disabled')
+        OR EXCLUDED.client_response_body_state IN ('none', 'disabled')
       )
       THEN 'none'
     ELSE COALESCE(

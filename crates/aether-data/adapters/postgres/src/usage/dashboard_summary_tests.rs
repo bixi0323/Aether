@@ -175,8 +175,8 @@ async fn live_future_dashboard_is_incremental_idempotent_and_survives_retention(
         assert_eq!(purged_history.activity_days,compacted.activity_days);
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM dashboard_request_contributions WHERE request_id LIKE 'historic-%'").fetch_one(&pool).await.unwrap(),0);
 
-        // Orphan ledgers left by the old trigger are removed in bounded PK
-        // pages. Live rows before the orphans must not starve later pages.
+        // The usage deletion trigger owns contribution cleanup. Maintenance
+        // deliberately avoids a second full-table orphan scan.
         for id in ["zz-orphan-1","zz-orphan-2","zz-orphan-3"] {
             sqlx::query("INSERT INTO dashboard_request_contributions(request_id,created_at,metrics) VALUES($1,now(),'{}')").bind(id).execute(&pool).await.unwrap();
         }
@@ -184,7 +184,7 @@ async fn live_future_dashboard_is_incremental_idempotent_and_survives_retention(
         repo.maintain_dashboard_projection(Utc::now(),1).await.unwrap();
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM dashboard_request_contributions WHERE request_id LIKE 'zz-orphan-%'").fetch_one(&pool).await.unwrap(),3);
         for _ in 0..12 { repo.maintain_dashboard_projection(Utc::now(),1).await.unwrap(); }
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM dashboard_request_contributions WHERE request_id LIKE 'zz-orphan-%'").fetch_one(&pool).await.unwrap(),0);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM dashboard_request_contributions WHERE request_id LIKE 'zz-orphan-%'").fetch_one(&pool).await.unwrap(),3);
         assert_eq!(repo.query_dashboard_summary(&query).await.unwrap().total,purged_history.total);
 
         // A correction may decide a bucket is still inside retention while a

@@ -93,47 +93,6 @@ impl SqlxUsageReadRepository {
             changed |= deleted.rows_affected() > 0;
         }
 
-        // Walk the contribution primary key, deleting only rows whose source
-        // usage no longer exists. Advancing the cursor over live rows avoids
-        // repeatedly rescanning a large healthy contribution table.
-        let cursor = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT contributions_cleanup_cursor FROM dashboard_stats_state WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_postgres_err()?;
-        let ids: Vec<String> = match cursor {
-            Some(cursor) => sqlx::query_scalar(
-                "SELECT request_id FROM dashboard_request_contributions WHERE request_id > $1 ORDER BY request_id LIMIT $2",
-            ).bind(cursor).bind(batch_size).fetch_all(&mut *tx).await.map_postgres_err()?,
-            None => sqlx::query_scalar(
-                "SELECT request_id FROM dashboard_request_contributions ORDER BY request_id LIMIT $1",
-            ).bind(batch_size).fetch_all(&mut *tx).await.map_postgres_err()?,
-        };
-        let next_cursor = ids.last().cloned();
-        if !ids.is_empty() {
-            let deleted = sqlx::query(
-                "DELETE FROM dashboard_request_contributions c\n                 WHERE c.request_id = ANY($1)\n                   AND NOT EXISTS (SELECT 1 FROM usage u WHERE u.request_id = c.request_id)",
-            )
-            .bind(&ids)
-            .execute(&mut *tx)
-            .await
-            .map_postgres_err()?;
-            changed |= deleted.rows_affected() > 0;
-        }
-        let cursor_value = if ids.len() < batch_size as usize {
-            None
-        } else {
-            next_cursor
-        };
-        sqlx::query(
-            "UPDATE dashboard_stats_state SET contributions_cleanup_cursor=$1 WHERE singleton",
-        )
-        .bind(cursor_value)
-        .execute(&mut *tx)
-        .await
-        .map_postgres_err()?;
-
         tx.commit().await.map_postgres_err()?;
         Ok(changed)
     }

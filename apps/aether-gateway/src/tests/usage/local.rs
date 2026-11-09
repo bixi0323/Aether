@@ -327,14 +327,14 @@ async fn gateway_handles_local_openai_chat_sync_report_with_local_reporting_when
 }
 
 #[test]
-fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage() {
+fn gateway_does_not_persist_deep_successful_request_echo_for_local_openai_chat_sync_usage() {
     run_async_test_on_large_stack(
-        "gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage",
-        gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_impl(),
+        "gateway_does_not_persist_deep_successful_request_echo_for_local_openai_chat_sync_usage",
+        gateway_does_not_persist_deep_successful_request_echo_for_local_openai_chat_sync_usage_impl(),
     );
 }
 
-async fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_impl() {
+async fn gateway_does_not_persist_deep_successful_request_echo_for_local_openai_chat_sync_usage_impl() {
     let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
     let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
 
@@ -455,28 +455,13 @@ async fn gateway_truncates_deep_request_echo_for_local_openai_chat_sync_usage_im
     let stored_usage = stored_usage.expect("usage should be recorded");
     assert_eq!(stored_usage.status, "completed");
     assert_eq!(stored_usage.total_tokens, 5);
-    let request_body = stored_usage.request_body.as_ref().unwrap();
-    assert_eq!(
-        request_body["messages"][0]["content"]
-            .as_str()
-            .unwrap()
-            .len(),
-        128 * 1024
-    );
-    assert!(
-        request_body["metadata"]["child"]["child"]["child"]["child"]["child"]
-            .get("depth")
-            .is_some()
-    );
+    assert!(stored_usage.request_body.is_none());
     assert!(stored_usage.request_body_ref.is_none());
     assert_eq!(
         stored_usage.request_body_state,
-        Some(UsageBodyCaptureState::Inline)
+        Some(UsageBodyCaptureState::Disabled)
     );
-    assert_eq!(
-        stored_usage.request_headers.as_ref().unwrap()["authorization"],
-        "Bearer sk-client-openai-local-report-sync-deep"
-    );
+    assert!(stored_usage.request_headers.is_none());
 
     gateway_handle.abort();
     execution_runtime_handle.abort();
@@ -606,29 +591,17 @@ async fn gateway_ignores_legacy_max_request_body_size_for_local_openai_chat_sync
     )
     .await;
     assert_eq!(stored_usage.total_tokens, 5);
-    assert!(
-        stored_usage.request_body.as_ref().unwrap()["messages"][0]["content"]
-            .as_str()
-            .unwrap()
-            .len()
-            > 128
-    );
+    assert!(stored_usage.request_body.is_none());
     assert!(stored_usage.request_body_ref.is_none());
     assert_eq!(
         stored_usage.request_body_state,
-        Some(UsageBodyCaptureState::Inline)
+        Some(UsageBodyCaptureState::Disabled)
     );
-    assert!(
-        stored_usage.provider_request_body.as_ref().unwrap()["messages"][0]["content"]
-            .as_str()
-            .unwrap()
-            .len()
-            > 128
-    );
+    assert!(stored_usage.provider_request_body.is_none());
     assert!(stored_usage.provider_request_body_ref.is_none());
     assert_eq!(
         stored_usage.provider_request_body_state,
-        Some(UsageBodyCaptureState::Inline)
+        Some(UsageBodyCaptureState::Disabled)
     );
 
     gateway_handle.abort();
@@ -645,9 +618,9 @@ fn gateway_strips_request_and_response_bodies_when_request_record_level_is_base(
 }
 
 #[test]
-fn gateway_full_request_record_level_preserves_sync_bodies_in_admin_detail() {
+fn gateway_full_request_record_level_still_strips_successful_sync_bodies_in_admin_detail() {
     run_async_test_on_large_stack(
-        "gateway_full_request_record_level_preserves_sync_bodies_in_admin_detail",
+        "gateway_full_request_record_level_still_strips_successful_sync_bodies_in_admin_detail",
         gateway_honors_request_record_level_impl("full"),
     );
 }
@@ -784,29 +757,12 @@ async fn gateway_honors_request_record_level_impl(record_level: &str) {
         "client_response_body",
     ] {
         assert!(shallow[field].is_null());
-        let expected_captured = record_level == "full" && field != "client_response_body";
         assert_eq!(
             shallow[format!("has_{field}")],
-            expected_captured,
+            false,
             "availability for {field}"
         );
-        if expected_captured {
-            assert!(!detail[field].is_null(), "full should expose {field}");
-        } else {
-            assert!(
-                detail[field].is_null(),
-                "uncaptured {field} must remain absent"
-            );
-        }
-    }
-    if record_level == "full" {
-        assert_eq!(
-            detail["request_body"]["messages"][0]["content"],
-            "request body should not be persisted"
-        );
-        assert_eq!(detail["provider_request_body"]["model"], "gpt-5-upstream");
-        assert_eq!(detail["response_body"], body_json);
-        assert!(detail["client_response_body"].is_null());
+        assert!(detail[field].is_null(), "successful {field} must remain absent");
     }
 
     let stored_candidates = request_candidate_repository
@@ -1435,9 +1391,9 @@ fn gateway_handles_local_openai_chat_stream_report_with_local_reporting_when_usa
 }
 
 #[test]
-fn gateway_full_request_record_level_preserves_stream_bodies_in_admin_detail() {
+fn gateway_full_request_record_level_still_strips_successful_stream_bodies_in_admin_detail() {
     run_async_test_on_large_stack(
-        "gateway_full_request_record_level_preserves_stream_bodies_in_admin_detail",
+        "gateway_full_request_record_level_still_strips_successful_stream_bodies_in_admin_detail",
         gateway_handles_local_openai_chat_stream_report_with_local_reporting_when_usage_runtime_enabled_impl("full"),
     );
 }
@@ -1598,21 +1554,10 @@ async fn gateway_handles_local_openai_chat_stream_report_with_local_reporting_wh
         "response_body",
         "client_response_body",
     ] {
-        if record_level == "full" {
-            assert!(
-                !detail[field].is_null(),
-                "full stream should expose {field}"
-            );
-        } else {
-            assert!(
-                detail[field].is_null(),
-                "basic stream must not persist {field}"
-            );
-        }
-    }
-    if record_level == "full" {
-        assert!(detail["response_body"].to_string().contains("hello"));
-        assert!(detail["client_response_body"].to_string().contains("hello"));
+        assert!(
+            detail[field].is_null(),
+            "successful stream must not persist {field}"
+        );
     }
 
     let stored_candidates = request_candidate_repository
@@ -1791,33 +1736,17 @@ async fn gateway_ignores_legacy_max_response_body_size_for_stream_usage_impl() {
     )
     .await;
     assert_eq!(stored_usage.total_tokens, 6);
-    assert!(
-        stored_usage
-            .response_body
-            .as_ref()
-            .unwrap()
-            .to_string()
-            .len()
-            > 128
-    );
+    assert!(stored_usage.response_body.is_none());
     assert!(stored_usage.response_body_ref.is_none());
     assert_eq!(
         stored_usage.response_body_state,
-        Some(UsageBodyCaptureState::Inline)
+        Some(UsageBodyCaptureState::Disabled)
     );
-    assert!(
-        stored_usage
-            .client_response_body
-            .as_ref()
-            .unwrap()
-            .to_string()
-            .len()
-            > 128
-    );
+    assert!(stored_usage.client_response_body.is_none());
     assert!(stored_usage.client_response_body_ref.is_none());
     assert_eq!(
         stored_usage.client_response_body_state,
-        Some(UsageBodyCaptureState::Inline)
+        Some(UsageBodyCaptureState::Disabled)
     );
 
     gateway_handle.abort();
@@ -2092,10 +2021,7 @@ async fn gateway_records_failed_usage_when_all_local_claude_cli_candidates_are_s
         Some("all_candidates_skipped")
     );
     assert!(stored_usage.error_message.is_none());
-    assert_eq!(
-        stored_usage.request_headers.as_ref().unwrap()["authorization"],
-        "Bearer sk-client-claude-cli-usage-local-miss"
-    );
+    assert!(stored_usage.request_headers.is_none());
     assert!(stored_usage.request_body.is_none());
     assert!(stored_usage.request_body_ref.is_none());
     assert_eq!(

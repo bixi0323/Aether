@@ -230,6 +230,7 @@ pub(super) fn usage_cleanup_window_for_mode(
             detail_cutoff: now_utc,
             compressed_cutoff: now_utc,
             header_cutoff: now_utc,
+            failure_cutoff: now_utc,
             log_cutoff: now_utc,
         },
     }

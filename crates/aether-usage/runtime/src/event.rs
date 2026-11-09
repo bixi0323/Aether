@@ -978,14 +978,14 @@ mod tests {
     }
 
     #[test]
-    fn event_capture_budget_basic_policy_needs_no_diagnostic_allocation() {
+    fn event_capture_budget_keeps_only_failed_upstream_body_before_budget_downgrade() {
         let mut event = captured_event();
         let budget = Arc::new(EventCaptureMemoryBudget::new(0));
         apply_usage_body_capture_policy_to_event(UsageBodyCapturePolicy::default(), &mut event);
         event.data.apply_capture_memory_budget(Arc::clone(&budget));
         assert_eq!(
             event.data.response_body_state,
-            Some(UsageBodyCaptureState::Disabled)
+            Some(UsageBodyCaptureState::Truncated)
         );
         assert_eq!(event.data.total_tokens, Some(600));
         assert_eq!(budget.retained_bytes(), 0);

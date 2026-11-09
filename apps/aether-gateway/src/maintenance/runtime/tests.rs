@@ -894,6 +894,7 @@ async fn usage_cleanup_settings_resolve_batch_and_delete_toggle() {
         ("detail_log_retention_days".to_string(), json!(7)),
         ("compressed_log_retention_days".to_string(), json!(30)),
         ("header_retention_days".to_string(), json!(90)),
+        ("failure_retention_days".to_string(), json!(21)),
         ("log_retention_days".to_string(), json!(365)),
         ("cleanup_batch_size".to_string(), json!(0)),
         ("auto_delete_expired_keys".to_string(), json!(true)),
@@ -909,6 +910,7 @@ async fn usage_cleanup_settings_resolve_batch_and_delete_toggle() {
             detail_retention_days: 7,
             compressed_retention_days: 30,
             header_retention_days: 90,
+            failure_retention_days: 21,
             log_retention_days: 365,
             batch_size: 1,
             auto_delete_expired_keys: true,
@@ -1099,6 +1101,7 @@ fn usage_cleanup_window_uses_non_overlapping_ranges() {
             detail_retention_days: 7,
             compressed_retention_days: 30,
             header_retention_days: 90,
+            failure_retention_days: 30,
             log_retention_days: 365,
             batch_size: 123,
             auto_delete_expired_keys: false,
@@ -1117,8 +1120,13 @@ fn usage_cleanup_window_uses_non_overlapping_ranges() {
         window.header_cutoff.to_rfc3339(),
         "2025-12-18T03:00:00+00:00"
     );
+    assert_eq!(
+        window.failure_cutoff.to_rfc3339(),
+        "2026-02-16T03:00:00+00:00"
+    );
     assert_eq!(window.log_cutoff.to_rfc3339(), "2025-03-18T03:00:00+00:00");
     assert!(window.detail_cutoff > window.compressed_cutoff);
+    assert_eq!(window.compressed_cutoff, window.failure_cutoff);
     assert!(window.compressed_cutoff > window.log_cutoff);
 }
 
@@ -1131,6 +1139,7 @@ fn usage_cleanup_window_with_override_is_always_non_aggressive() {
         detail_retention_days: 7,
         compressed_retention_days: 30,
         header_retention_days: 90,
+        failure_retention_days: 30,
         log_retention_days: 365,
         batch_size: 123,
         auto_delete_expired_keys: false,
@@ -1143,6 +1152,7 @@ fn usage_cleanup_window_with_override_is_always_non_aggressive() {
     assert_eq!(clamped.detail_cutoff, now_utc - override_duration);
     assert_eq!(clamped.compressed_cutoff, now_utc - override_duration);
     assert_eq!(clamped.header_cutoff, now_utc - override_duration);
+    assert_eq!(clamped.failure_cutoff, now_utc - override_duration);
     assert_eq!(clamped.log_cutoff, policy.log_cutoff);
     assert!(clamped.log_cutoff <= policy.log_cutoff);
 
@@ -1161,6 +1171,7 @@ fn usage_cleanup_window_with_override_is_always_non_aggressive() {
             (window.detail_cutoff, policy.detail_cutoff),
             (window.compressed_cutoff, policy.compressed_cutoff),
             (window.header_cutoff, policy.header_cutoff),
+            (window.failure_cutoff, policy.failure_cutoff),
             (window.log_cutoff, policy.log_cutoff),
         ] {
             assert!(actual <= configured);
@@ -1188,6 +1199,7 @@ fn usage_cleanup_before_now_window_uses_current_timestamp_only() {
         detail_retention_days: 7,
         compressed_retention_days: 30,
         header_retention_days: 90,
+        failure_retention_days: 30,
         log_retention_days: 365,
         batch_size: 123,
         auto_delete_expired_keys: false,
@@ -1199,6 +1211,7 @@ fn usage_cleanup_before_now_window_uses_current_timestamp_only() {
     assert_eq!(window.detail_cutoff, now_utc);
     assert_eq!(window.compressed_cutoff, now_utc);
     assert_eq!(window.header_cutoff, now_utc);
+    assert_eq!(window.failure_cutoff, now_utc);
     assert_eq!(window.log_cutoff, now_utc);
 }
 

@@ -2431,6 +2431,7 @@ INSERT INTO public.request_candidates (
                 detail_cutoff: now,
                 compressed_cutoff: now,
                 header_cutoff: now,
+                failure_cutoff: now,
                 log_cutoff: now,
             },
             100,

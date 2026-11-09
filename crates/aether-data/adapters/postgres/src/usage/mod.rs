@@ -9188,6 +9188,7 @@ ORDER BY "usage".user_id ASC
                         stored.request_metadata = request_metadata_value;
                     }
 
+                    let mut counter_deltas = Vec::with_capacity(6);
                     let before_api_key_contribution =
                         previous_usage.as_ref().and_then(api_key_usage_contribution);
                     let after_api_key_contribution = api_key_usage_contribution(&stored);
@@ -9197,34 +9198,34 @@ ORDER BY "usage".user_id ASC
                     ) {
                         (Some(before), Some(after)) if before.api_key_id == after.api_key_id => {
                             let delta = ApiKeyUsageDelta::between(before, after);
-                            enqueue_api_key_usage_delta_in_tx(
-                                tx,
+                            if let Some(input) = prepare_api_key_usage_delta(
                                 &usage.request_id,
                                 before.api_key_id.as_str(),
                                 &delta,
-                            )
-                            .await?;
+                            )? {
+                                counter_deltas.push(input);
+                            }
                         }
                         _ => {
                             if let Some(before) = before_api_key_contribution.as_ref() {
                                 let delta = ApiKeyUsageDelta::removal(before);
-                                enqueue_api_key_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_api_key_usage_delta(
                                     &usage.request_id,
                                     before.api_key_id.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                             if let Some(after) = after_api_key_contribution.as_ref() {
                                 let delta = ApiKeyUsageDelta::addition(after);
-                                enqueue_api_key_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_api_key_usage_delta(
                                     &usage.request_id,
                                     after.api_key_id.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                         }
                     }
@@ -9238,34 +9239,34 @@ ORDER BY "usage".user_id ASC
                     ) {
                         (Some(before), Some(after)) if before.model == after.model => {
                             let delta = ModelUsageDelta::between(before, after);
-                            enqueue_model_usage_delta_in_tx(
-                                tx,
+                            if let Some(input) = prepare_model_usage_delta(
                                 &usage.request_id,
                                 before.model.as_str(),
                                 &delta,
-                            )
-                            .await?;
+                            )? {
+                                counter_deltas.push(input);
+                            }
                         }
                         _ => {
                             if let Some(before) = before_model_contribution.as_ref() {
                                 let delta = ModelUsageDelta::removal(before);
-                                enqueue_model_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_model_usage_delta(
                                     &usage.request_id,
                                     before.model.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                             if let Some(after) = after_model_contribution.as_ref() {
                                 let delta = ModelUsageDelta::addition(after);
-                                enqueue_model_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_model_usage_delta(
                                     &usage.request_id,
                                     after.model.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                         }
                     }
@@ -9280,37 +9281,38 @@ ORDER BY "usage".user_id ASC
                     ) {
                         (Some(before), Some(after)) if before.key_id == after.key_id => {
                             let delta = ProviderApiKeyUsageDelta::between(before, after);
-                            enqueue_provider_api_key_usage_delta_in_tx(
-                                tx,
+                            if let Some(input) = prepare_provider_api_key_usage_delta(
                                 &usage.request_id,
                                 before.key_id.as_str(),
                                 &delta,
-                            )
-                            .await?;
+                            )? {
+                                counter_deltas.push(input);
+                            }
                         }
                         _ => {
                             if let Some(before) = before_provider_contribution.as_ref() {
                                 let delta = ProviderApiKeyUsageDelta::removal(before);
-                                enqueue_provider_api_key_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_provider_api_key_usage_delta(
                                     &usage.request_id,
                                     before.key_id.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                             if let Some(after) = after_provider_contribution.as_ref() {
                                 let delta = ProviderApiKeyUsageDelta::addition(after);
-                                enqueue_provider_api_key_usage_delta_in_tx(
-                                    tx,
+                                if let Some(input) = prepare_provider_api_key_usage_delta(
                                     &usage.request_id,
                                     after.key_id.as_str(),
                                     &delta,
-                                )
-                                .await?;
+                                )? {
+                                    counter_deltas.push(input);
+                                }
                             }
                         }
                     }
+                    insert_usage_counter_deltas_batch_in_tx(tx, &counter_deltas).await?;
 
                     Ok(stored)
                 }) as BoxFuture<'_, Result<StoredRequestUsageAudit, DataLayerError>>
@@ -9691,18 +9693,18 @@ ON CONFLICT (request_id) DO UPDATE SET
   provider_request_headers = COALESCE(EXCLUDED.provider_request_headers, usage_http_audits.provider_request_headers),
   response_headers = COALESCE(EXCLUDED.response_headers, usage_http_audits.response_headers),
   client_response_headers = COALESCE(EXCLUDED.client_response_headers, usage_http_audits.client_response_headers),
-  request_body_ref = CASE WHEN EXCLUDED.request_body_state = 'none' THEN NULL ELSE COALESCE(EXCLUDED.request_body_ref, usage_http_audits.request_body_ref) END,
-  provider_request_body_ref = CASE WHEN EXCLUDED.provider_request_body_state = 'none' THEN NULL ELSE COALESCE(EXCLUDED.provider_request_body_ref, usage_http_audits.provider_request_body_ref) END,
-  response_body_ref = CASE WHEN EXCLUDED.response_body_state = 'none' THEN NULL ELSE COALESCE(EXCLUDED.response_body_ref, usage_http_audits.response_body_ref) END,
-  client_response_body_ref = CASE WHEN EXCLUDED.client_response_body_state = 'none' THEN NULL ELSE COALESCE(EXCLUDED.client_response_body_ref, usage_http_audits.client_response_body_ref) END,
+  request_body_ref = CASE WHEN EXCLUDED.request_body_state IN ('none', 'disabled') THEN NULL ELSE COALESCE(EXCLUDED.request_body_ref, usage_http_audits.request_body_ref) END,
+  provider_request_body_ref = CASE WHEN EXCLUDED.provider_request_body_state IN ('none', 'disabled') THEN NULL ELSE COALESCE(EXCLUDED.provider_request_body_ref, usage_http_audits.provider_request_body_ref) END,
+  response_body_ref = CASE WHEN EXCLUDED.response_body_state IN ('none', 'disabled') THEN NULL ELSE COALESCE(EXCLUDED.response_body_ref, usage_http_audits.response_body_ref) END,
+  client_response_body_ref = CASE WHEN EXCLUDED.client_response_body_state IN ('none', 'disabled') THEN NULL ELSE COALESCE(EXCLUDED.client_response_body_ref, usage_http_audits.client_response_body_ref) END,
   request_body_state = COALESCE(EXCLUDED.request_body_state, usage_http_audits.request_body_state),
   provider_request_body_state = COALESCE(EXCLUDED.provider_request_body_state, usage_http_audits.provider_request_body_state),
   response_body_state = COALESCE(EXCLUDED.response_body_state, usage_http_audits.response_body_state),
   client_response_body_state = COALESCE(EXCLUDED.client_response_body_state, usage_http_audits.client_response_body_state),
   body_capture_mode = CASE
     WHEN EXCLUDED.body_capture_mode = 'none' AND (
-      EXCLUDED.request_body_state = 'none' OR EXCLUDED.provider_request_body_state = 'none'
-      OR EXCLUDED.response_body_state = 'none' OR EXCLUDED.client_response_body_state = 'none'
+      EXCLUDED.request_body_state IN ('none', 'disabled') OR EXCLUDED.provider_request_body_state IN ('none', 'disabled')
+      OR EXCLUDED.response_body_state IN ('none', 'disabled') OR EXCLUDED.client_response_body_state IN ('none', 'disabled')
     ) THEN 'none'
     ELSE COALESCE(NULLIF(EXCLUDED.body_capture_mode, 'none'), usage_http_audits.body_capture_mode, 'none')
   END,
@@ -11624,22 +11626,20 @@ fn optional_i64_to_unix_secs(
         .transpose()
 }
 
-async fn enqueue_api_key_usage_delta_in_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
+fn prepare_api_key_usage_delta(
     request_id: &str,
     api_key_id: &str,
     delta: &ApiKeyUsageDelta,
-) -> Result<(), DataLayerError> {
+) -> Result<Option<PreparedUsageCounterDeltaInsert>, DataLayerError> {
     if api_key_id.trim().is_empty() || delta.is_noop() {
-        return Ok(());
+        return Ok(None);
     }
     let total_cost_usd_delta = if delta.total_cost_usd.is_finite() {
         delta.total_cost_usd
     } else {
         0.0
     };
-    insert_usage_counter_delta_in_tx(
-        tx,
+    prepare_usage_counter_delta_insert(
         UsageCounterDeltaInsert {
             request_id,
             kind: USAGE_COUNTER_KIND_API_KEY,
@@ -11661,20 +11661,17 @@ async fn enqueue_api_key_usage_delta_in_tx(
             usage_created_at_unix_secs: None,
         },
     )
-    .await
 }
 
-async fn enqueue_model_usage_delta_in_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
+fn prepare_model_usage_delta(
     request_id: &str,
     model: &str,
     delta: &ModelUsageDelta,
-) -> Result<(), DataLayerError> {
+) -> Result<Option<PreparedUsageCounterDeltaInsert>, DataLayerError> {
     if model.trim().is_empty() || delta.is_noop() {
-        return Ok(());
+        return Ok(None);
     }
-    insert_usage_counter_delta_in_tx(
-        tx,
+    prepare_usage_counter_delta_insert(
         UsageCounterDeltaInsert {
             request_id,
             kind: USAGE_COUNTER_KIND_MODEL,
@@ -11696,7 +11693,6 @@ async fn enqueue_model_usage_delta_in_tx(
             usage_created_at_unix_secs: None,
         },
     )
-    .await
 }
 
 async fn enqueue_provider_api_key_usage_delta_in_tx(
@@ -11705,16 +11701,26 @@ async fn enqueue_provider_api_key_usage_delta_in_tx(
     key_id: &str,
     delta: &ProviderApiKeyUsageDelta,
 ) -> Result<(), DataLayerError> {
-    if key_id.trim().is_empty() || delta.is_noop() {
+    let Some(input) = prepare_provider_api_key_usage_delta(request_id, key_id, delta)? else {
         return Ok(());
+    };
+    insert_prepared_usage_counter_delta_in_tx(tx, input).await
+}
+
+fn prepare_provider_api_key_usage_delta(
+    request_id: &str,
+    key_id: &str,
+    delta: &ProviderApiKeyUsageDelta,
+) -> Result<Option<PreparedUsageCounterDeltaInsert>, DataLayerError> {
+    if key_id.trim().is_empty() || delta.is_noop() {
+        return Ok(None);
     }
     let total_cost_usd_delta = if delta.total_cost_usd.is_finite() {
         delta.total_cost_usd
     } else {
         0.0
     };
-    insert_usage_counter_delta_in_tx(
-        tx,
+    prepare_usage_counter_delta_insert(
         UsageCounterDeltaInsert {
             request_id,
             kind: USAGE_COUNTER_KIND_PROVIDER_API_KEY,
@@ -11736,7 +11742,6 @@ async fn enqueue_provider_api_key_usage_delta_in_tx(
             usage_created_at_unix_secs: delta.usage_created_at_unix_secs,
         },
     )
-    .await
 }
 
 struct UsageCounterDeltaInsert<'a> {
@@ -11851,7 +11856,13 @@ async fn insert_usage_counter_delta_in_tx(
     let Some(input) = prepare_usage_counter_delta_insert(input)? else {
         return Ok(());
     };
+    insert_prepared_usage_counter_delta_in_tx(tx, input).await
+}
 
+async fn insert_prepared_usage_counter_delta_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    input: PreparedUsageCounterDeltaInsert,
+) -> Result<(), DataLayerError> {
     sqlx::query(INSERT_USAGE_COUNTER_DELTA_SQL)
         .bind(input.id)
         .bind(input.request_id)
@@ -12918,36 +12929,49 @@ fn prepare_usage_upsert_context(
         usage.provider_request_body.as_ref(),
         usage.provider_request_body_state,
     );
-    let clear_request_body = usage.request_body_state == Some(UsageBodyCaptureState::None);
-    let clear_provider_request_body =
+    let clear_request_body_facts = usage.request_body_state == Some(UsageBodyCaptureState::None);
+    let clear_provider_request_body_facts =
         usage.provider_request_body_state == Some(UsageBodyCaptureState::None);
-    let clear_response_body = usage.response_body_state == Some(UsageBodyCaptureState::None);
-    let clear_client_response_body =
-        usage.client_response_body_state == Some(UsageBodyCaptureState::None);
+    let clear_request_body_storage = matches!(
+        usage.request_body_state,
+        Some(UsageBodyCaptureState::None | UsageBodyCaptureState::Disabled)
+    );
+    let clear_provider_request_body_storage = matches!(
+        usage.provider_request_body_state,
+        Some(UsageBodyCaptureState::None | UsageBodyCaptureState::Disabled)
+    );
+    let clear_response_body_storage = matches!(
+        usage.response_body_state,
+        Some(UsageBodyCaptureState::None | UsageBodyCaptureState::Disabled)
+    );
+    let clear_client_response_body_storage = matches!(
+        usage.client_response_body_state,
+        Some(UsageBodyCaptureState::None | UsageBodyCaptureState::Disabled)
+    );
     // A typed `none` marker wins over residual values left on a reused event by an earlier
     // candidate. Do not serialize those values or recreate their detached references.
-    let request_body = (!clear_request_body)
+    let request_body = (!clear_request_body_storage)
         .then_some(usage.request_body.as_ref())
         .flatten();
-    let provider_request_body = (!clear_provider_request_body)
+    let provider_request_body = (!clear_provider_request_body_storage)
         .then_some(usage.provider_request_body.as_ref())
         .flatten();
-    let response_body = (!clear_response_body)
+    let response_body = (!clear_response_body_storage)
         .then_some(usage.response_body.as_ref())
         .flatten();
-    let client_response_body = (!clear_client_response_body)
+    let client_response_body = (!clear_client_response_body_storage)
         .then_some(usage.client_response_body.as_ref())
         .flatten();
-    let request_body_ref = (!clear_request_body)
+    let request_body_ref = (!clear_request_body_storage)
         .then_some(usage.request_body_ref.as_deref())
         .flatten();
-    let provider_request_body_ref = (!clear_provider_request_body)
+    let provider_request_body_ref = (!clear_provider_request_body_storage)
         .then_some(usage.provider_request_body_ref.as_deref())
         .flatten();
-    let response_body_ref = (!clear_response_body)
+    let response_body_ref = (!clear_response_body_storage)
         .then_some(usage.response_body_ref.as_deref())
         .flatten();
-    let client_response_body_ref = (!clear_client_response_body)
+    let client_response_body_ref = (!clear_client_response_body_storage)
         .then_some(usage.client_response_body_ref.as_deref())
         .flatten();
     let request_headers_json = json_bind_text(usage.request_headers.as_ref())?;
@@ -13039,19 +13063,22 @@ fn prepare_usage_upsert_context(
             ),
         ],
     );
-    if request_metadata_value.is_some() && (clear_request_body || clear_provider_request_body) {
+    if request_metadata_value.is_some()
+        && (clear_request_body_facts || clear_provider_request_body_facts)
+    {
         request_metadata_value = Some(clear_previous_request_body_facts(
             request_metadata_value.as_ref(),
-            clear_request_body,
-            clear_provider_request_body,
+            clear_request_body_facts,
+            clear_provider_request_body_facts,
         ));
     }
     // The raw event is used above to build the capture and billing snapshots, but only the
     // allow-listed metadata may reach the accounting row.  Keep an explicit empty object when a
     // body `none` marker cleared the last derived fact: PostgreSQL's sparse upsert uses COALESCE
     // and would otherwise resurrect the previous candidate's provider metadata from NULL.
-    let preserve_empty_metadata_tombstone =
-        (clear_request_body || clear_provider_request_body) && request_metadata_value.is_some();
+    let preserve_empty_metadata_tombstone = (clear_request_body_facts
+        || clear_provider_request_body_facts)
+        && request_metadata_value.is_some();
     request_metadata_value =
         project_usage_request_metadata(request_metadata_value, preserve_empty_metadata_tombstone);
     let http_audit_capture_mode = usage_http_audit_capture_mode(
@@ -13087,10 +13114,10 @@ fn prepare_usage_upsert_context(
         request_metadata_json,
         replace_client_request_body_facts,
         replace_provider_request_body_facts,
-        clear_request_body,
-        clear_provider_request_body,
-        clear_response_body,
-        clear_client_response_body,
+        clear_request_body: clear_request_body_storage,
+        clear_provider_request_body: clear_provider_request_body_storage,
+        clear_response_body: clear_response_body_storage,
+        clear_client_response_body: clear_client_response_body_storage,
     })
 }
 

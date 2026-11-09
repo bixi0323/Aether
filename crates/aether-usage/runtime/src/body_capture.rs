@@ -6,12 +6,13 @@ use aether_data_contracts::repository::usage::{
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::event::UsageEvent;
+use crate::event::{UsageEvent, UsageEventType};
 use crate::runtime::{UsageBodyCapturePolicy, UsageRequestRecordLevel};
 
 const TRUNCATED_BODY_STRING_SUFFIX: &str = "...[truncated]";
 const BASE64_IMAGE_DATA_URL_PREFIX: &str = "data:image/";
 const BASE64_DATA_URL_MARKER: &str = ";base64,";
+const FAILURE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 struct LimitedUsageBodyCapture {
@@ -246,14 +247,184 @@ pub fn apply_usage_body_capture_policy_to_event(
     policy: UsageBodyCapturePolicy,
     event: &mut UsageEvent,
 ) {
-    UsageBodyCaptureEngine::new(policy).apply_to_event(event);
+    if usage_event_is_failure(event) {
+        sanitize_failure_headers(
+            &mut event.data.request_headers,
+            &mut event.data.provider_request_headers,
+            &mut event.data.response_headers,
+            &mut event.data.client_response_headers,
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::RequestBody,
+            "request",
+            &mut event.data.request_body,
+            &mut event.data.request_body_ref,
+            &mut event.data.request_body_state,
+            &mut event.data.request_metadata,
+            "failure_request_capture_disabled",
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::ProviderRequestBody,
+            "provider_request",
+            &mut event.data.provider_request_body,
+            &mut event.data.provider_request_body_ref,
+            &mut event.data.provider_request_body_state,
+            &mut event.data.request_metadata,
+            "failure_request_capture_disabled",
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::ClientResponseBody,
+            "client_response",
+            &mut event.data.client_response_body,
+            &mut event.data.client_response_body_ref,
+            &mut event.data.client_response_body_state,
+            &mut event.data.request_metadata,
+            "failure_client_response_capture_disabled",
+        );
+        UsageBodyCaptureEngine::new(failure_usage_body_capture_policy(policy)).apply_to_event(event);
+        return;
+    }
+
+    clear_success_headers(
+        &mut event.data.request_headers,
+        &mut event.data.provider_request_headers,
+        &mut event.data.response_headers,
+        &mut event.data.client_response_headers,
+    );
+    UsageBodyCaptureEngine::new(UsageBodyCapturePolicy {
+        record_level: UsageRequestRecordLevel::Basic,
+        compact_base64_images: policy.compact_base64_images,
+        max_body_bytes: policy.max_body_bytes,
+    })
+    .apply_to_event(event);
 }
 
 pub fn apply_usage_body_capture_policy_to_record(
     policy: UsageBodyCapturePolicy,
     record: &mut UpsertUsageRecord,
 ) {
-    UsageBodyCaptureEngine::new(policy).apply_to_record(record);
+    if usage_record_is_failure(record) {
+        sanitize_failure_headers(
+            &mut record.request_headers,
+            &mut record.provider_request_headers,
+            &mut record.response_headers,
+            &mut record.client_response_headers,
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::RequestBody,
+            "request",
+            &mut record.request_body,
+            &mut record.request_body_ref,
+            &mut record.request_body_state,
+            &mut record.request_metadata,
+            "failure_request_capture_disabled",
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::ProviderRequestBody,
+            "provider_request",
+            &mut record.provider_request_body,
+            &mut record.provider_request_body_ref,
+            &mut record.provider_request_body_state,
+            &mut record.request_metadata,
+            "failure_request_capture_disabled",
+        );
+        disable_usage_body_capture_field(
+            UsageBodyField::ClientResponseBody,
+            "client_response",
+            &mut record.client_response_body,
+            &mut record.client_response_body_ref,
+            &mut record.client_response_body_state,
+            &mut record.request_metadata,
+            "failure_client_response_capture_disabled",
+        );
+        UsageBodyCaptureEngine::new(failure_usage_body_capture_policy(policy))
+            .apply_to_record(record);
+        return;
+    }
+
+    clear_success_headers(
+        &mut record.request_headers,
+        &mut record.provider_request_headers,
+        &mut record.response_headers,
+        &mut record.client_response_headers,
+    );
+    UsageBodyCaptureEngine::new(UsageBodyCapturePolicy {
+        record_level: UsageRequestRecordLevel::Basic,
+        compact_base64_images: policy.compact_base64_images,
+        max_body_bytes: policy.max_body_bytes,
+    })
+    .apply_to_record(record);
+}
+
+fn usage_event_is_failure(event: &UsageEvent) -> bool {
+    matches!(event.event_type, UsageEventType::Failed | UsageEventType::Cancelled)
+        || event
+            .data
+            .status_code
+            .is_some_and(|status_code| status_code >= 400)
+}
+
+fn usage_record_is_failure(record: &UpsertUsageRecord) -> bool {
+    matches!(record.status.as_str(), "failed" | "cancelled")
+        || record
+            .status_code
+            .is_some_and(|status_code| status_code >= 400)
+}
+
+fn failure_usage_body_capture_policy(policy: UsageBodyCapturePolicy) -> UsageBodyCapturePolicy {
+    UsageBodyCapturePolicy {
+        record_level: UsageRequestRecordLevel::Full,
+        compact_base64_images: policy.compact_base64_images,
+        max_body_bytes: Some(
+            policy
+                .max_body_bytes
+                .map_or(FAILURE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES, |limit| {
+                    limit.min(FAILURE_RESPONSE_BODY_CAPTURE_LIMIT_BYTES)
+                }),
+        ),
+    }
+}
+
+fn clear_success_headers(
+    request_headers: &mut Option<Value>,
+    provider_request_headers: &mut Option<Value>,
+    response_headers: &mut Option<Value>,
+    client_response_headers: &mut Option<Value>,
+) {
+    *request_headers = None;
+    *provider_request_headers = None;
+    *response_headers = None;
+    *client_response_headers = None;
+}
+
+fn sanitize_failure_headers(
+    request_headers: &mut Option<Value>,
+    provider_request_headers: &mut Option<Value>,
+    response_headers: &mut Option<Value>,
+    client_response_headers: &mut Option<Value>,
+) {
+    let response_content_type = content_type_header(response_headers);
+    let client_content_type = content_type_header(client_response_headers);
+    *request_headers = None;
+    *provider_request_headers = None;
+    *response_headers = response_content_type
+        .clone()
+        .or_else(|| client_content_type.clone());
+    *client_response_headers = client_content_type.or(response_content_type);
+}
+
+fn content_type_header(headers: &Option<Value>) -> Option<Value> {
+    let content_type = headers
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|headers| {
+            headers.iter().find_map(|(name, value)| {
+                name.eq_ignore_ascii_case("content-type")
+                    .then_some(value)
+                    .filter(|value| !value.is_null())
+            })
+        })?;
+    Some(json!({"content-type": content_type.clone()}))
 }
 
 fn disable_usage_body_capture_field(
@@ -870,7 +1041,7 @@ mod tests {
         apply_usage_body_capture_policy_to_event, apply_usage_body_capture_policy_to_record,
         build_plan_body_capture_metadata, compact_base64_image_data_urls,
         sync_usage_body_ref_metadata, trim_owned_non_empty_string, truncate_usage_body_string,
-        upsert_body_capture_metadata_value_entry,
+        upsert_body_capture_metadata_value_entry, UsageBodyCaptureEngine,
     };
     use aether_data_contracts::repository::usage::UsageBodyCaptureState;
     use aether_data_contracts::repository::usage::UsageBodyField;
@@ -1192,6 +1363,135 @@ mod tests {
     }
 
     #[test]
+    fn successful_requests_keep_no_headers_or_body_capture() {
+        let mut event = UsageEvent::new(
+            UsageEventType::Completed,
+            "req-success-capture",
+            UsageEventData {
+                provider_name: "OpenAI".to_string(),
+                model: "gpt-5".to_string(),
+                status_code: Some(200),
+                request_headers: Some(json!({"authorization": "Bearer secret"})),
+                provider_request_headers: Some(json!({"x-api-key": "secret"})),
+                response_headers: Some(json!({"content-type": "application/json"})),
+                client_response_headers: Some(json!({"set-cookie": "secret"})),
+                request_body: Some(json!({"prompt": "private"})),
+                provider_request_body: Some(json!({"prompt": "private"})),
+                response_body: Some(json!({"output": "private"})),
+                client_response_body: Some(json!({"output": "private"})),
+                ..UsageEventData::default()
+            },
+        );
+
+        apply_usage_body_capture_policy_to_event(
+            UsageBodyCapturePolicy {
+                record_level: UsageRequestRecordLevel::Full,
+                ..UsageBodyCapturePolicy::default()
+            },
+            &mut event,
+        );
+
+        assert!(event.data.request_headers.is_none());
+        assert!(event.data.provider_request_headers.is_none());
+        assert!(event.data.response_headers.is_none());
+        assert!(event.data.client_response_headers.is_none());
+        for (body, state) in [
+            (&event.data.request_body, event.data.request_body_state),
+            (
+                &event.data.provider_request_body,
+                event.data.provider_request_body_state,
+            ),
+            (&event.data.response_body, event.data.response_body_state),
+            (
+                &event.data.client_response_body,
+                event.data.client_response_body_state,
+            ),
+        ] {
+            assert!(body.is_none());
+            assert_eq!(state, Some(UsageBodyCaptureState::Disabled));
+        }
+    }
+
+    #[test]
+    fn failed_requests_keep_only_bounded_upstream_response_and_content_type() {
+        let mut event = UsageEvent::new(
+            UsageEventType::Failed,
+            "req-failed-capture",
+            UsageEventData {
+                provider_name: "OpenAI".to_string(),
+                model: "gpt-5".to_string(),
+                status_code: Some(502),
+                request_headers: Some(json!({"authorization": "Bearer secret"})),
+                provider_request_headers: Some(json!({"x-api-key": "secret"})),
+                response_headers: Some(json!({
+                    "Content-Type": "application/json",
+                    "set-cookie": "secret"
+                })),
+                client_response_headers: Some(json!({
+                    "content-type": "text/plain",
+                    "x-private": "secret"
+                })),
+                request_body: Some(json!({"prompt": "private"})),
+                provider_request_body: Some(json!({"prompt": "private"})),
+                response_body: Some(json!("x".repeat(70 * 1024))),
+                client_response_body: Some(json!({"error": "client representation"})),
+                candidate_id: Some("candidate-7".to_string()),
+                request_metadata: Some(json!({
+                    "analytics_failure": {
+                        "origin": "upstream",
+                        "stage": "response",
+                        "reason": "upstream_response_error"
+                    }
+                })),
+                ..UsageEventData::default()
+            },
+        );
+
+        apply_usage_body_capture_policy_to_event(UsageBodyCapturePolicy::default(), &mut event);
+
+        assert!(event.data.request_headers.is_none());
+        assert!(event.data.provider_request_headers.is_none());
+        assert_eq!(
+            event.data.response_headers,
+            Some(json!({"content-type": "application/json"}))
+        );
+        assert_eq!(
+            event.data.client_response_headers,
+            Some(json!({"content-type": "text/plain"}))
+        );
+        assert!(event.data.request_body.is_none());
+        assert!(event.data.provider_request_body.is_none());
+        assert!(event.data.client_response_body.is_none());
+        assert_eq!(
+            event.data.request_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
+        assert_eq!(
+            event.data.provider_request_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
+        assert_eq!(
+            event.data.client_response_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
+        assert_eq!(
+            event.data.response_body_state,
+            Some(UsageBodyCaptureState::Truncated)
+        );
+        assert!(
+            serde_json::to_vec(event.data.response_body.as_ref().unwrap())
+                .unwrap()
+                .len()
+                <= 64 * 1024
+        );
+        assert_eq!(event.data.candidate_id.as_deref(), Some("candidate-7"));
+        assert_eq!(
+            event.data.request_metadata.as_ref().unwrap()["analytics_failure"]["stage"],
+            "response"
+        );
+    }
+
+    #[test]
     fn body_capture_policy_compacts_images_before_enforcing_the_size_limit() {
         let encoded_image = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 1536]);
         let mut event = UsageEvent::new(
@@ -1211,14 +1511,14 @@ mod tests {
             },
         );
 
-        apply_usage_body_capture_policy_to_event(
+        UsageBodyCaptureEngine::new(
             UsageBodyCapturePolicy {
                 record_level: UsageRequestRecordLevel::Full,
                 compact_base64_images: true,
                 max_body_bytes: Some(1024),
             },
-            &mut event,
-        );
+        )
+        .apply_to_event(&mut event);
 
         assert_eq!(
             event.data.request_body_state,
@@ -1254,14 +1554,14 @@ mod tests {
             },
         );
 
-        apply_usage_body_capture_policy_to_event(
+        UsageBodyCaptureEngine::new(
             UsageBodyCapturePolicy {
                 record_level: UsageRequestRecordLevel::Full,
                 compact_base64_images: false,
                 max_body_bytes: Some(1024),
             },
-            &mut event,
-        );
+        )
+        .apply_to_event(&mut event);
 
         assert_eq!(
             event.data.request_body_state,

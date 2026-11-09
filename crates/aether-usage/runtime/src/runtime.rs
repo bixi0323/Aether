@@ -12770,20 +12770,17 @@ mod tests {
         assert_eq!(queued.data.total_cost_usd, None);
     }
 
-    fn oversized_full_terminal_event(max_bytes: usize) -> (serde_json::Value, UsageEvent) {
-        let body = json!({"content": "full-body".repeat(max_bytes / 16)});
+    fn oversized_failure_terminal_event() -> UsageEvent {
+        let body = json!("x".repeat(70 * 1024));
         let mut event = UsageEvent::new(
-            UsageEventType::Completed,
-            "oversized-full-capture",
+            UsageEventType::Failed,
+            "oversized-failure-capture",
             UsageEventData {
                 provider_name: "openai".to_string(),
                 model: "gpt-5".to_string(),
-                status_code: Some(200),
+                status_code: Some(502),
                 total_tokens: Some(12),
-                request_body: Some(body.clone()),
-                provider_request_body: Some(body.clone()),
-                response_body: Some(body.clone()),
-                client_response_body: Some(body.clone()),
+                response_body: Some(body),
                 ..UsageEventData::default()
             },
         );
@@ -12794,14 +12791,15 @@ mod tests {
             },
             &mut event,
         );
-        (body, event)
+        event
     }
 
     #[tokio::test]
-    async fn oversized_full_terminal_capture_is_persisted_without_queue_truncation() {
+    async fn oversized_failure_terminal_capture_is_persisted_without_queue_truncation() {
         let config = UsageRuntimeConfig {
             enabled: true,
             queue_terminal_events: true,
+            queue_payload_max_bytes: 16 * 1024,
             consumer_block_ms: 1,
             ..UsageRuntimeConfig::default()
         };
@@ -12814,7 +12812,7 @@ mod tests {
             enrich_calls: AtomicUsize::new(0),
         };
         let runtime = UsageRuntime::new(config.clone()).unwrap();
-        let (body, event) = oversized_full_terminal_event(config.queue_payload_max_bytes);
+        let event = oversized_failure_terminal_event();
         assert!(
             event
                 .to_bounded_stream_fields(config.queue_payload_max_bytes)
@@ -12835,19 +12833,24 @@ mod tests {
         for captured in [
             &records[0].request_body,
             &records[0].provider_request_body,
-            &records[0].response_body,
             &records[0].client_response_body,
         ] {
-            assert_eq!(captured.as_ref(), Some(&body));
+            assert!(captured.is_none());
         }
+        assert!(records[0].response_body.is_some());
+        assert_eq!(
+            records[0].response_body_state,
+            Some(UsageBodyCaptureState::Truncated)
+        );
     }
 
     #[tokio::test]
-    async fn oversized_full_terminal_capture_keeps_bounded_queue_fallback() {
+    async fn oversized_failure_terminal_capture_keeps_bounded_queue_fallback() {
         for unavailable in ["writer", "write_failure", "worker_gate", "fallback_gate"] {
             let config = UsageRuntimeConfig {
                 enabled: true,
                 queue_terminal_events: true,
+                queue_payload_max_bytes: 16 * 1024,
                 consumer_block_ms: 1,
                 worker_record_concurrency_limit: Some(1),
                 ..UsageRuntimeConfig::default()
@@ -12879,7 +12882,7 @@ mod tests {
                     .try_acquire()
                     .unwrap()
             });
-            let (_, event) = oversized_full_terminal_event(config.queue_payload_max_bytes);
+            let event = oversized_failure_terminal_event();
 
             let outcome = if unavailable == "writer" {
                 runtime.enqueue_or_write_terminal(&queue_only, event).await
@@ -12910,15 +12913,19 @@ mod tests {
                     &queued.data.provider_request_body,
                     queued.data.provider_request_body_state,
                 ),
-                (&queued.data.response_body, queued.data.response_body_state),
                 (
                     &queued.data.client_response_body,
                     queued.data.client_response_body_state,
                 ),
             ] {
                 assert!(body.is_none());
-                assert_eq!(state, Some(UsageBodyCaptureState::Truncated));
+                assert_eq!(state, Some(UsageBodyCaptureState::Disabled));
             }
+            assert!(queued.data.response_body.is_none());
+            assert_eq!(
+                queued.data.response_body_state,
+                Some(UsageBodyCaptureState::Truncated)
+            );
             assert_eq!(runtime.metrics_snapshot().terminal_enqueue_failed_total, 0);
             drop((worker_permit, fallback_permit));
         }
@@ -14428,7 +14435,7 @@ mod tests {
     }
 
     #[test]
-    fn event_capture_budget_full_policy_preserves_facts_before_zero_budget_and_database_mapping() {
+    fn event_capture_budget_success_policy_preserves_facts_before_zero_budget_and_database_mapping() {
         let mut event = UsageEvent::new(
             UsageEventType::Completed,
             "event-capture-budget-facts",
@@ -14476,7 +14483,7 @@ mod tests {
         assert!(record.response_body.is_none());
         assert_eq!(
             record.provider_request_body_state,
-            Some(UsageBodyCaptureState::Truncated)
+            Some(UsageBodyCaptureState::Disabled)
         );
         let metadata = record.request_metadata.expect("preserved billing facts");
         assert_eq!(metadata["requested_reasoning_effort"], "high");
@@ -14492,7 +14499,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_request_record_level_strips_body_capture_but_preserves_derived_fields() {
+    fn basic_request_record_level_keeps_only_failed_upstream_response() {
         let mut event = UsageEvent::new(
             UsageEventType::Failed,
             "req-basic-1",
@@ -14548,8 +14555,18 @@ mod tests {
         assert!(event.data.request_body_ref.is_none());
         assert!(event.data.provider_request_body.is_none());
         assert!(event.data.provider_request_body_ref.is_none());
-        assert!(event.data.response_body.is_none());
+        assert_eq!(
+            event.data.response_body,
+            Some(json!({
+                "error":{"message":"bad gateway"},
+                "service_tier": "Default"
+            }))
+        );
         assert!(event.data.response_body_ref.is_none());
+        assert_eq!(
+            event.data.response_body_state,
+            Some(UsageBodyCaptureState::Inline)
+        );
         assert!(event.data.client_response_body.is_none());
         assert!(event.data.client_response_body_ref.is_none());
         assert_eq!(

@@ -2936,6 +2936,7 @@ pub struct UsageCleanupWindow {
     pub detail_cutoff: DateTime<Utc>,
     pub compressed_cutoff: DateTime<Utc>,
     pub header_cutoff: DateTime<Utc>,
+    pub failure_cutoff: DateTime<Utc>,
     pub log_cutoff: DateTime<Utc>,
 }
 

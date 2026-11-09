@@ -192,7 +192,7 @@ async fn pending_batch_is_opt_in_and_rejects_non_pending_before_connecting() {
 
 #[tokio::test]
 #[ignore = "requires AETHER_TEST_DATABASE_URL and PostgreSQL migrations"]
-async fn live_full_http_capture_round_trips_for_direct_and_batch_writes() {
+async fn live_successful_http_capture_is_cleared_for_direct_and_batch_writes() {
     let factory = PostgresPoolFactory::new(PostgresPoolConfig {
         database_url: std::env::var("AETHER_TEST_DATABASE_URL").unwrap(),
         min_connections: 1,
@@ -259,27 +259,17 @@ async fn live_full_http_capture_round_trips_for_direct_and_batch_writes() {
             repository.upsert(pending.clone()).await.unwrap();
         }
         assert_eq!(budget.retained_bytes(), pending_bytes);
-        for (field, expected) in [
-            (UsageBodyField::RequestBody, pending.request_body.as_ref()),
-            (
-                UsageBodyField::ProviderRequestBody,
-                pending.provider_request_body.as_ref(),
-            ),
-            (UsageBodyField::ResponseBody, pending.response_body.as_ref()),
-            (
-                UsageBodyField::ClientResponseBody,
-                pending.client_response_body.as_ref(),
-            ),
+        for field in [
+            UsageBodyField::RequestBody,
+            UsageBodyField::ProviderRequestBody,
+            UsageBodyField::ResponseBody,
+            UsageBodyField::ClientResponseBody,
         ] {
-            assert_eq!(
-                repository
-                    .resolve_body_ref(&usage_body_ref(&request_id, field))
-                    .await
-                    .unwrap()
-                    .as_ref(),
-                expected,
-                "batch={batch}, field={field:?}"
-            );
+            assert!(repository
+                .resolve_body_ref(&usage_body_ref(&request_id, field))
+                .await
+                .unwrap()
+                .is_none());
         }
 
         let mut terminal = fast_clear_usage_record(
@@ -310,46 +300,20 @@ async fn live_full_http_capture_round_trips_for_direct_and_batch_writes() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            stored.request_headers,
-            Some(json!({"content-type": "application/json", "authorization": "Bearer private"}))
-        );
-        assert_eq!(
-            stored.response_headers,
-            Some(json!({"content-type": "text/event-stream", "set-cookie": "private"}))
-        );
-        for (field, expected) in [
-            (UsageBodyField::RequestBody, pending.request_body.as_ref()),
-            (
-                UsageBodyField::ProviderRequestBody,
-                pending.provider_request_body.as_ref(),
-            ),
-            (
-                UsageBodyField::ResponseBody,
-                terminal.response_body.as_ref(),
-            ),
-            (
-                UsageBodyField::ClientResponseBody,
-                terminal.client_response_body.as_ref(),
-            ),
+        assert!(stored.request_headers.is_none());
+        assert!(stored.response_headers.is_none());
+        assert!(stored.client_response_headers.is_none());
+        for field in [
+            UsageBodyField::RequestBody,
+            UsageBodyField::ProviderRequestBody,
+            UsageBodyField::ResponseBody,
+            UsageBodyField::ClientResponseBody,
         ] {
             assert_eq!(
                 stored.body_state(field),
-                Some(UsageBodyCaptureState::Reference)
+                Some(UsageBodyCaptureState::Disabled)
             );
-            assert_eq!(
-                stored.body_ref(field),
-                Some(usage_body_ref(&request_id, field).as_str())
-            );
-            assert_eq!(
-                repository
-                    .resolve_body_ref(stored.body_ref(field).unwrap())
-                    .await
-                    .unwrap()
-                    .as_ref(),
-                expected,
-                "batch={batch}, field={field:?}"
-            );
+            assert!(stored.body_ref(field).is_none());
         }
         let legacy_content_present: bool = sqlx::query_scalar("SELECT request_body IS NOT NULL OR request_headers IS NOT NULL OR response_body IS NOT NULL FROM usage WHERE request_id = $1")
             .bind(&request_id).fetch_one(repository.pool()).await.unwrap();
@@ -4024,14 +3988,25 @@ fn usage_sql_capture_guard_covers_bodies_metadata_and_http_ref_tombstones() {
         );
     }
     for assignment in [
-        "WHEN EXCLUDED.request_body_state = 'none' THEN NULL",
-        "WHEN EXCLUDED.provider_request_body_state = 'none' THEN NULL",
-        "WHEN EXCLUDED.response_body_state = 'none' THEN NULL",
-        "WHEN EXCLUDED.client_response_body_state = 'none' THEN NULL",
+        "WHEN EXCLUDED.request_body_state IN ('none', 'disabled') THEN NULL",
+        "WHEN EXCLUDED.provider_request_body_state IN ('none', 'disabled') THEN NULL",
+        "WHEN EXCLUDED.response_body_state IN ('none', 'disabled') THEN NULL",
+        "WHEN EXCLUDED.client_response_body_state IN ('none', 'disabled') THEN NULL",
     ] {
         assert!(
             super::UPSERT_USAGE_HTTP_AUDIT_SQL.contains(assignment),
             "missing HTTP ref tombstone: {assignment}"
+        );
+    }
+    for assignment in [
+        "request_headers = EXCLUDED.request_headers",
+        "provider_request_headers = EXCLUDED.provider_request_headers",
+        "response_headers = EXCLUDED.response_headers",
+        "client_response_headers = EXCLUDED.client_response_headers",
+    ] {
+        assert!(
+            super::UPSERT_USAGE_HTTP_AUDIT_SQL.contains(assignment),
+            "missing HTTP header replacement: {assignment}"
         );
     }
     let source = include_str!("mod.rs");

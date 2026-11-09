@@ -18,9 +18,16 @@ const DELETE_OLD_USAGE_RECORDS_SQL: &str = r#"
 WITH doomed AS (
     SELECT id
     FROM usage
-    WHERE created_at < $1
+    WHERE (
+        (status IN ('failed', 'cancelled') OR COALESCE(status_code, 0) >= 400)
+        AND created_at < $2
+    ) OR (
+        status NOT IN ('failed', 'cancelled')
+        AND COALESCE(status_code, 0) < 400
+        AND created_at < $1
+    )
     ORDER BY created_at ASC, id ASC
-    LIMIT $2
+    LIMIT $3
 )
 DELETE FROM usage AS usage_rows
 USING doomed
@@ -47,6 +54,10 @@ FROM usage
 WHERE created_at < $1
   AND ($2::timestamptz IS NULL OR created_at >= $2)
   AND (
+    (status NOT IN ('failed', 'cancelled') AND COALESCE(status_code, 0) < 400)
+    OR created_at < $3
+  )
+  AND (
     request_headers IS NOT NULL
     OR response_headers IS NOT NULL
     OR provider_request_headers IS NOT NULL
@@ -64,7 +75,7 @@ WHERE created_at < $1
     )
   )
 ORDER BY created_at ASC, id ASC
-LIMIT $3
+LIMIT $4
 "#;
 const CLEAR_USAGE_HEADER_FIELDS_SQL: &str = r#"
 UPDATE usage
@@ -101,6 +112,10 @@ FROM usage
 WHERE created_at < $1
   AND ($2::timestamptz IS NULL OR created_at >= $2)
   AND (
+    (status NOT IN ('failed', 'cancelled') AND COALESCE(status_code, 0) < 400)
+    OR created_at < $3
+  )
+  AND (
     request_body IS NOT NULL
     OR response_body IS NOT NULL
     OR provider_request_body IS NOT NULL
@@ -127,7 +142,7 @@ WHERE created_at < $1
     )
   )
 ORDER BY created_at ASC, id ASC
-LIMIT $3
+LIMIT $4
 "#;
 const SELECT_USAGE_RAW_BODY_BATCH_SQL: &str = r#"
 SELECT id, request_id
@@ -484,7 +499,13 @@ impl SqlxUsageReadRepository {
         }
 
         let records_deleted = if targets.records {
-            delete_old_usage_records(&self.pool, window.log_cutoff, batch_size).await?
+            delete_old_usage_records(
+                &self.pool,
+                window.log_cutoff,
+                window.failure_cutoff,
+                batch_size,
+            )
+            .await?
         } else {
             0
         };
@@ -492,6 +513,7 @@ impl SqlxUsageReadRepository {
             cleanup_usage_header_fields(
                 &self.pool,
                 window.header_cutoff,
+                window.failure_cutoff,
                 batch_size,
                 targets.records.then_some(window.log_cutoff),
             )
@@ -503,6 +525,7 @@ impl SqlxUsageReadRepository {
             cleanup_usage_stale_body_fields(
                 &self.pool,
                 window.compressed_cutoff,
+                window.failure_cutoff,
                 batch_size,
                 targets.records.then_some(window.log_cutoff),
             )
@@ -597,6 +620,7 @@ pub async fn preview_usage_cleanup_impl(
         count_usage_stale_body_candidates(
             pool,
             window.compressed_cutoff,
+            window.failure_cutoff,
             targets.records.then_some(window.log_cutoff),
         )
         .await?
@@ -607,6 +631,7 @@ pub async fn preview_usage_cleanup_impl(
         count_usage_header_candidates(
             pool,
             window.header_cutoff,
+            window.failure_cutoff,
             targets.records.then_some(window.log_cutoff),
         )
         .await?
@@ -614,12 +639,25 @@ pub async fn preview_usage_cleanup_impl(
         0
     };
     let log = if targets.records {
-        let log: i64 =
-            sqlx::query_scalar("SELECT COUNT(*)::bigint FROM usage WHERE created_at < $1")
-                .bind(window.log_cutoff)
-                .fetch_one(pool)
-                .await
-                .map_err(postgres_error)?;
+        let log: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)::bigint
+FROM usage
+WHERE (
+    (status IN ('failed', 'cancelled') OR COALESCE(status_code, 0) >= 400)
+    AND created_at < $2
+) OR (
+    status NOT IN ('failed', 'cancelled')
+    AND COALESCE(status_code, 0) < 400
+    AND created_at < $1
+)
+"#,
+        )
+        .bind(window.log_cutoff)
+        .bind(window.failure_cutoff)
+        .fetch_one(pool)
+        .await
+        .map_err(postgres_error)?;
         u64::try_from(log).unwrap_or(0)
     } else {
         0
@@ -908,6 +946,7 @@ WHERE created_at < $1
 async fn count_usage_stale_body_candidates(
     pool: &PostgresPool,
     cutoff_time: DateTime<Utc>,
+    failure_cutoff: DateTime<Utc>,
     newer_than: Option<DateTime<Utc>>,
 ) -> Result<u64, DataLayerError> {
     if matches!(newer_than, Some(value) if value >= cutoff_time) {
@@ -919,6 +958,10 @@ SELECT COUNT(*)::bigint
 FROM usage
 WHERE created_at < $1
   AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND (
+    (status NOT IN ('failed', 'cancelled') AND COALESCE(status_code, 0) < 400)
+    OR created_at < $3
+  )
   AND (
     request_body IS NOT NULL
     OR response_body IS NOT NULL
@@ -949,6 +992,7 @@ WHERE created_at < $1
     )
     .bind(cutoff_time)
     .bind(newer_than)
+    .bind(failure_cutoff)
     .fetch_one(pool)
     .await
     .map_err(postgres_error)?;
@@ -958,6 +1002,7 @@ WHERE created_at < $1
 async fn count_usage_header_candidates(
     pool: &PostgresPool,
     cutoff_time: DateTime<Utc>,
+    failure_cutoff: DateTime<Utc>,
     newer_than: Option<DateTime<Utc>>,
 ) -> Result<u64, DataLayerError> {
     if matches!(newer_than, Some(value) if value >= cutoff_time) {
@@ -969,6 +1014,10 @@ SELECT COUNT(*)::bigint
 FROM usage
 WHERE created_at < $1
   AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND (
+    (status NOT IN ('failed', 'cancelled') AND COALESCE(status_code, 0) < 400)
+    OR created_at < $3
+  )
   AND (
     request_headers IS NOT NULL
     OR response_headers IS NOT NULL
@@ -990,6 +1039,7 @@ WHERE created_at < $1
     )
     .bind(cutoff_time)
     .bind(newer_than)
+    .bind(failure_cutoff)
     .fetch_one(pool)
     .await
     .map_err(postgres_error)?;
@@ -999,12 +1049,14 @@ WHERE created_at < $1
 async fn delete_old_usage_records(
     pool: &PostgresPool,
     cutoff_time: DateTime<Utc>,
+    failure_cutoff: DateTime<Utc>,
     batch_size: usize,
 ) -> Result<usize, DataLayerError> {
     let mut total_deleted = 0usize;
     loop {
         let deleted = sqlx::query(DELETE_OLD_USAGE_RECORDS_SQL)
             .bind(cutoff_time)
+            .bind(failure_cutoff)
             .bind(i64::try_from(batch_size).unwrap_or(i64::MAX))
             .execute(pool)
             .await
@@ -1112,6 +1164,7 @@ async fn migrate_legacy_usage_body_ref_metadata(
 async fn cleanup_usage_header_fields(
     pool: &PostgresPool,
     cutoff_time: DateTime<Utc>,
+    failure_cutoff: DateTime<Utc>,
     batch_size: usize,
     newer_than: Option<DateTime<Utc>>,
 ) -> Result<usize, DataLayerError> {
@@ -1129,6 +1182,7 @@ async fn cleanup_usage_header_fields(
         let mut stream = sqlx::query(SELECT_USAGE_HEADER_BATCH_SQL)
             .bind(cutoff_time)
             .bind(newer_than)
+            .bind(failure_cutoff)
             .bind(i64::try_from(batch_size).unwrap_or(i64::MAX))
             .fetch(pool);
         let mut rows = Vec::new();
@@ -1177,6 +1231,7 @@ async fn cleanup_usage_header_fields(
 async fn cleanup_usage_stale_body_fields(
     pool: &PostgresPool,
     cutoff_time: DateTime<Utc>,
+    failure_cutoff: DateTime<Utc>,
     batch_size: usize,
     newer_than: Option<DateTime<Utc>>,
 ) -> Result<usize, DataLayerError> {
@@ -1194,6 +1249,7 @@ async fn cleanup_usage_stale_body_fields(
         let mut stream = sqlx::query(SELECT_USAGE_STALE_BODY_BATCH_SQL)
             .bind(cutoff_time)
             .bind(newer_than)
+            .bind(failure_cutoff)
             .bind(i64::try_from(batch_size).unwrap_or(i64::MAX))
             .fetch(pool);
         let mut rows = Vec::new();
@@ -1538,6 +1594,15 @@ mod tests {
         assert!(super::SELECT_USAGE_BODY_COMPRESSION_ROW_SQL.contains("FOR UPDATE"));
     }
 
+    #[test]
+    fn failed_usage_uses_the_dedicated_failure_retention_cutoff() {
+        assert!(super::DELETE_OLD_USAGE_RECORDS_SQL
+            .contains("status IN ('failed', 'cancelled') OR COALESCE(status_code, 0) >= 400"));
+        assert!(super::DELETE_OLD_USAGE_RECORDS_SQL.contains("AND created_at < $2"));
+        assert!(super::SELECT_USAGE_HEADER_BATCH_SQL.contains("OR created_at < $3"));
+        assert!(super::SELECT_USAGE_STALE_BODY_BATCH_SQL.contains("OR created_at < $3"));
+    }
+
     #[tokio::test]
     #[ignore = "requires AETHER_TEST_DATABASE_URL and PostgreSQL migrations"]
     async fn live_body_retention_externalizes_without_prematurely_deleting_full_capture() {
@@ -1660,6 +1725,7 @@ mod tests {
             detail_cutoff: now - Duration::days(7),
             compressed_cutoff: now - Duration::days(30),
             header_cutoff: now - Duration::days(90),
+            failure_cutoff: now - Duration::days(30),
             log_cutoff: now - Duration::days(365),
         };
         let targets = super::UsageCleanupTargets::body_targets();

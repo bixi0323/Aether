@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use aether_data::repository::users::StoredUserGroup;
 use aether_data_contracts::repository::billing::UserDailyQuotaAvailabilityRecord;
 use aether_data_contracts::repository::quota::StoredProviderQuotaSnapshot;
-use aether_data_contracts::repository::usage::UsageCounterHealthSnapshot;
+use aether_data_contracts::repository::usage::{
+    StoredProviderApiKeyWindowUsageSummary, UsageCounterHealthSnapshot,
+};
 use aether_gateway_frontdoor::HttpConnectionBudget;
 use aether_runtime::ConcurrencyGate;
 use aether_runtime_state::{RuntimeSemaphore, RuntimeState};
@@ -422,6 +424,8 @@ pub struct AppState {
         Arc<ValueCache<String, aether_data::repository::wallet::StoredWalletSnapshot>>,
     pub(crate) auth_request_cost_upper_bound_cache: Arc<ValueCache<String, f64>>,
     pub(crate) provider_quota_snapshot_cache: Arc<ValueCache<String, StoredProviderQuotaSnapshot>>,
+    pub(crate) provider_api_key_window_usage_cache:
+        Arc<ValueCache<String, Vec<StoredProviderApiKeyWindowUsageSummary>>>,
     pub(crate) user_groups_for_user_cache: Arc<ValueCache<String, Vec<StoredUserGroup>>>,
     pub(crate) routing_group_selection_cache:
         Arc<ValueCache<String, crate::routing::GatewayRoutingGroupSelection>>,

@@ -99,6 +99,7 @@ pub(super) async fn usage_cleanup_settings(
         compressed_retention_days: system_config_u64(data, "compressed_log_retention_days", 30)
             .await?,
         header_retention_days: system_config_u64(data, "header_retention_days", 90).await?,
+        failure_retention_days: system_config_u64(data, "failure_retention_days", 30).await?,
         log_retention_days: system_config_u64(data, "log_retention_days", 365).await?,
         batch_size: system_config_usize(data, "cleanup_batch_size", 1_000)
             .await?
@@ -125,6 +126,7 @@ pub(super) fn usage_cleanup_window_with_override(
         detail_cutoff: now_utc - minutes(settings.detail_retention_days),
         compressed_cutoff: now_utc - minutes(settings.compressed_retention_days),
         header_cutoff: now_utc - minutes(settings.header_retention_days),
+        failure_cutoff: now_utc - minutes(settings.failure_retention_days),
         log_cutoff: now_utc - minutes(settings.log_retention_days),
     };
     let Some(override_duration) = override_older_than else {
@@ -135,6 +137,7 @@ pub(super) fn usage_cleanup_window_with_override(
         detail_cutoff: policy.detail_cutoff.min(manual_cutoff),
         compressed_cutoff: policy.compressed_cutoff.min(manual_cutoff),
         header_cutoff: policy.header_cutoff.min(manual_cutoff),
+        failure_cutoff: policy.failure_cutoff.min(manual_cutoff),
         log_cutoff: policy.log_cutoff.min(manual_cutoff),
     }
 }

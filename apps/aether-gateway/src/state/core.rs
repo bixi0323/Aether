@@ -428,6 +428,7 @@ impl AppState {
             auth_wallet_snapshot_cache: Arc::new(ValueCache::default()),
             auth_request_cost_upper_bound_cache: Arc::new(ValueCache::default()),
             provider_quota_snapshot_cache: Arc::new(ValueCache::default()),
+            provider_api_key_window_usage_cache: Arc::new(ValueCache::default()),
             user_groups_for_user_cache: Arc::new(ValueCache::default()),
             routing_group_selection_cache: Arc::new(ValueCache::default()),
             auth_api_key_last_used_cache: Arc::new(AuthApiKeyLastUsedCache::default()),

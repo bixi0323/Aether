@@ -1,6 +1,12 @@
+use std::fmt::Write as _;
+use std::time::Duration;
+
 use crate::{AppState, GatewayError};
 use aether_data_contracts::repository::{candidates, usage};
 use usage::{StoredUsageDailySummary, UsageDailyHeatmapQuery};
+
+const PROVIDER_API_KEY_WINDOW_USAGE_CACHE_TTL: Duration = Duration::from_secs(30);
+const PROVIDER_API_KEY_WINDOW_USAGE_BUCKET_SECS: u64 = 30;
 
 impl AppState {
     pub(crate) async fn query_dashboard_analytics(
@@ -399,10 +405,25 @@ impl AppState {
         &self,
         requests: &[usage::ProviderApiKeyWindowUsageRequest],
     ) -> Result<Vec<usage::StoredProviderApiKeyWindowUsageSummary>, GatewayError> {
-        self.data
-            .summarize_usage_by_provider_api_key_windows(requests)
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (cache_key, requests) =
+            normalize_provider_api_key_window_usage_requests(requests);
+        self.provider_api_key_window_usage_cache
+            .get_or_load_once(
+                cache_key,
+                PROVIDER_API_KEY_WINDOW_USAGE_CACHE_TTL,
+                || async move {
+                    self.data
+                        .summarize_usage_by_provider_api_key_windows(&requests)
+                        .await
+                        .map(Some)
+                        .map_err(|err| GatewayError::Internal(err.to_string()))
+                },
+            )
             .await
-            .map_err(|err| GatewayError::Internal(err.to_string()))
+            .map(|value| value.unwrap_or_default())
     }
 
     pub(crate) async fn list_users_by_ids(
@@ -413,5 +434,98 @@ impl AppState {
             .list_users_by_ids(user_ids)
             .await
             .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+}
+
+fn normalize_provider_api_key_window_usage_requests(
+    requests: &[usage::ProviderApiKeyWindowUsageRequest],
+) -> (String, Vec<usage::ProviderApiKeyWindowUsageRequest>) {
+    let mut requests = requests
+        .iter()
+        .map(|request| usage::ProviderApiKeyWindowUsageRequest {
+            provider_api_key_id: request.provider_api_key_id.trim().to_string(),
+            window_code: request.window_code.trim().to_string(),
+            start_unix_secs: request.start_unix_secs,
+            end_unix_secs: request
+                .end_unix_secs
+                .saturating_add(PROVIDER_API_KEY_WINDOW_USAGE_BUCKET_SECS - 1)
+                / PROVIDER_API_KEY_WINDOW_USAGE_BUCKET_SECS
+                * PROVIDER_API_KEY_WINDOW_USAGE_BUCKET_SECS,
+        })
+        .collect::<Vec<_>>();
+    requests.sort_by(|left, right| {
+        (
+            left.provider_api_key_id.as_str(),
+            left.window_code.as_str(),
+            left.start_unix_secs,
+            left.end_unix_secs,
+        )
+            .cmp(&(
+                right.provider_api_key_id.as_str(),
+                right.window_code.as_str(),
+                right.start_unix_secs,
+                right.end_unix_secs,
+            ))
+    });
+    requests.dedup();
+
+    let mut key = String::new();
+    for request in &requests {
+        let _ = writeln!(
+            key,
+            "{}:{}:{}:{}:{}",
+            request.provider_api_key_id.len(),
+            request.provider_api_key_id,
+            request.window_code.len(),
+            request.window_code,
+            request.start_unix_secs,
+        );
+        let _ = writeln!(key, "{}", request.end_unix_secs);
+    }
+    (key, requests)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_provider_api_key_window_usage_requests;
+    use aether_data_contracts::repository::usage::ProviderApiKeyWindowUsageRequest;
+
+    fn request(provider_api_key_id: &str, end_unix_secs: u64) -> ProviderApiKeyWindowUsageRequest {
+        ProviderApiKeyWindowUsageRequest {
+            provider_api_key_id: provider_api_key_id.to_string(),
+            window_code: "weekly".to_string(),
+            start_unix_secs: 900,
+            end_unix_secs,
+        }
+    }
+
+    #[test]
+    fn provider_key_window_cache_key_is_stable_inside_a_thirty_second_bucket() {
+        let (first_key, first) = normalize_provider_api_key_window_usage_requests(&[
+            request("key-b", 991),
+            request("key-a", 991),
+        ]);
+        let (second_key, second) = normalize_provider_api_key_window_usage_requests(&[
+            request("key-a", 1_010),
+            request("key-b", 1_010),
+            request("key-a", 1_010),
+        ]);
+
+        assert_eq!(first_key, second_key);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].provider_api_key_id, "key-a");
+    }
+
+    #[test]
+    fn provider_key_window_cache_key_changes_after_the_bucket() {
+        let (first_key, _) = normalize_provider_api_key_window_usage_requests(&[request(
+            "key-a", 1_020,
+        )]);
+        let (second_key, _) = normalize_provider_api_key_window_usage_requests(&[request(
+            "key-a", 1_021,
+        )]);
+
+        assert_ne!(first_key, second_key);
     }
 }

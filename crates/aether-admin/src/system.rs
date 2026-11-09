@@ -2246,6 +2246,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "detail_log_retention_days" => Some(json!(7)),
         "compressed_log_retention_days" => Some(json!(30)),
         "header_retention_days" => Some(json!(90)),
+        "failure_retention_days" => Some(json!(30)),
         "log_retention_days" => Some(json!(365)),
         "enable_auto_cleanup" => Some(json!(true)),
         "cleanup_batch_size" => Some(json!(1000)),

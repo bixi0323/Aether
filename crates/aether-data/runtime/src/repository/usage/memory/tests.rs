@@ -773,7 +773,7 @@ async fn upsert_preserves_routing_group_snapshot_across_terminal_metadata_replac
 }
 
 #[tokio::test]
-async fn upsert_preserves_full_http_captures_across_lifecycle_updates() {
+async fn upsert_clears_successful_http_captures_across_lifecycle_updates() {
     let repository = InMemoryUsageReadRepository::default();
     let mut pending = sample_upsert_usage_record("req-full-capture");
     pending.request_headers =
@@ -784,25 +784,20 @@ async fn upsert_preserves_full_http_captures_across_lifecycle_updates() {
     pending.request_body_state = Some(UsageBodyCaptureState::Inline);
     pending.provider_request_body_state = Some(UsageBodyCaptureState::Inline);
     let stored_pending = repository.upsert(pending.clone()).await.unwrap();
-    assert_eq!(stored_pending.request_body, pending.request_body);
+    assert!(stored_pending.request_body.is_none());
+    assert!(stored_pending.provider_request_body.is_none());
+    assert!(stored_pending.request_headers.is_none());
     assert_eq!(
-        stored_pending.provider_request_body,
-        pending.provider_request_body
-    );
-    assert_eq!(
-        stored_pending.request_headers,
-        Some(json!({"content-type": "application/json", "authorization": "Bearer private"}))
+        stored_pending.request_body_state,
+        Some(UsageBodyCaptureState::Disabled)
     );
 
     let mut streaming = sample_upsert_usage_record(&pending.request_id);
     streaming.status = "streaming".to_string();
     streaming.updated_at_unix_secs += 1;
     let stored_streaming = repository.upsert(streaming).await.unwrap();
-    assert_eq!(stored_streaming.request_body, pending.request_body);
-    assert_eq!(
-        stored_streaming.provider_request_body,
-        pending.provider_request_body
-    );
+    assert!(stored_streaming.request_body.is_none());
+    assert!(stored_streaming.provider_request_body.is_none());
 
     let mut terminal = sample_upsert_usage_record(&pending.request_id);
     terminal.status = "completed".to_string();
@@ -814,32 +809,25 @@ async fn upsert_preserves_full_http_captures_across_lifecycle_updates() {
     terminal.client_response_body =
         Some(json!({"choices": [{"message": {"content": "client response"}}]}));
     let stored_terminal = repository.upsert(terminal.clone()).await.unwrap();
-    assert_eq!(stored_terminal.request_body, pending.request_body);
-    assert_eq!(
-        stored_terminal.provider_request_body,
-        pending.provider_request_body
-    );
-    assert_eq!(stored_terminal.response_body, terminal.response_body);
-    assert_eq!(
-        stored_terminal.client_response_body,
-        terminal.client_response_body
-    );
-    assert_eq!(
-        stored_terminal.response_headers,
-        Some(json!({"content-type": "text/event-stream", "set-cookie": "private"}))
-    );
+    assert!(stored_terminal.request_body.is_none());
+    assert!(stored_terminal.provider_request_body.is_none());
+    assert!(stored_terminal.response_body.is_none());
+    assert!(stored_terminal.client_response_body.is_none());
+    assert!(stored_terminal.response_headers.is_none());
 
     let found = repository
         .find_by_request_id(&pending.request_id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.request_body, pending.request_body);
-    assert_eq!(found.response_body, terminal.response_body);
-    assert_eq!(
-        repository.upsert(pending).await.unwrap().response_body,
-        terminal.response_body
-    );
+    assert!(found.request_body.is_none());
+    assert!(found.response_body.is_none());
+    assert!(repository
+        .upsert(pending)
+        .await
+        .unwrap()
+        .response_body
+        .is_none());
 }
 
 #[tokio::test]

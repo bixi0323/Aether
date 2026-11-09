@@ -3473,35 +3473,19 @@ impl UsageWriteRepository for InMemoryUsageReadRepository {
             ),
             status: usage.status,
             billing_status: usage.billing_status,
-            request_headers: capture_usage.request_headers.or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|item| item.request_headers.clone())
-            }),
+            request_headers: capture_usage.request_headers,
             request_body,
             request_body_ref,
             request_body_state,
-            provider_request_headers: capture_usage.provider_request_headers.or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|item| item.provider_request_headers.clone())
-            }),
+            provider_request_headers: capture_usage.provider_request_headers,
             provider_request_body,
             provider_request_body_ref,
             provider_request_body_state,
-            response_headers: capture_usage.response_headers.or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|item| item.response_headers.clone())
-            }),
+            response_headers: capture_usage.response_headers,
             response_body,
             response_body_ref,
             response_body_state,
-            client_response_headers: capture_usage.client_response_headers.or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|item| item.client_response_headers.clone())
-            }),
+            client_response_headers: capture_usage.client_response_headers,
             client_response_body,
             client_response_body_ref,
             client_response_body_state,

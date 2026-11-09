@@ -171,6 +171,7 @@ struct UsageCleanupSettings {
     detail_retention_days: u64,
     compressed_retention_days: u64,
     header_retention_days: u64,
+    failure_retention_days: u64,
     log_retention_days: u64,
     batch_size: usize,
     auto_delete_expired_keys: bool,

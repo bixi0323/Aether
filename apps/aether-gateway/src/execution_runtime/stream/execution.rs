@@ -15941,7 +15941,11 @@ mod tests {
             usage.response_body.is_none(),
             "upstream redirect did not include a body"
         );
-        assert_eq!(usage.client_response_body.as_ref(), Some(&body_json));
+        assert!(usage.client_response_body.is_none());
+        assert_eq!(
+            usage.client_response_body_state,
+            Some(UsageBodyCaptureState::Disabled)
+        );
         let candidates = request_candidate_repository
             .list_by_request_id("req-remote-runtime-stream-redirect")
             .await
