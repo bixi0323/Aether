@@ -41,6 +41,9 @@ jobs:
           sed -i 's|docker.m.daocloud.io/library/rust:${RUST_VERSION}-slim|rust:${RUST_VERSION}-slim|g' Dockerfile.app.local
           sed -i '/npm config set registry/d' Dockerfile.app.local
           sed -i '/mirrors.tuna.tsinghua.edu.cn/d' Dockerfile.app.local || true
+          sed -i 's|registry.npmmirror.com|registry.npmjs.org|g' \
+            aether-vscodex/web/package-lock.json \
+            frontend/package-lock.json
           head -40 Dockerfile.app.local
 
       - name: Build and push
