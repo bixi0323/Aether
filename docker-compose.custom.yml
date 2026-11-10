@@ -1,0 +1,8 @@
+# Local deployment override for the custom Aether image.
+# Keeps the existing PostgreSQL 17 data volume from docker-compose.yml while
+# disabling the legacy host frontend overlay. The custom image contains the
+# updated frontend and local pool-stats change.
+services:
+  app:
+    image: ${AETHER_DEPLOY_IMAGE:-ghcr.io/bixi0323/aether:pr-818-5de69709132ca5391d285bceb54e99ed83b958ae}
+    volumes: !reset []
