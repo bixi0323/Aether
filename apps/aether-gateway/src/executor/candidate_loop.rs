@@ -291,7 +291,7 @@ where
                 .await?;
         let _permit = acquire_upstream_execution_gate(self.state, self.trace_id).await?;
         let upstream_execution_gate_held_started_at = std::time::Instant::now();
-        let execution = provider_admission
+        let mut execution = provider_admission
             .scope(execute_execution_runtime_sync_with_retry_scope(
                 self.state,
                 self.parts.uri.path(),
