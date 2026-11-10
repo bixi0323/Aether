@@ -9,7 +9,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/bixi0323/aether
-  TAG: pr-818
+  TAG: deepseek-queue-current
 
 jobs:
   build:
@@ -54,9 +54,9 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ env.TAG }}
-            ${{ env.IMAGE }}:pr-818-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ env.TAG }}-${{ github.sha }}
           build-args: |
-            AETHER_BUILD_VERSION=pr-818-${{ github.sha }}
+            AETHER_BUILD_VERSION=${{ env.TAG }}-${{ github.sha }}
             NODE_BASE_IMAGE=node:22-slim
             RUST_BASE_IMAGE=rust:1.95.0-slim
           cache-from: type=gha
