@@ -3,7 +3,7 @@
 
 services:
   postgres:
-    image: postgres:15
+    image: postgres:17
     container_name: aether-postgres
     shm_size: ${POSTGRES_SHM_SIZE:-512mb}
     environment:
@@ -43,7 +43,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aether-redis
-    command: redis-server --dir /tmp --appendonly no --save "" --requirepass ${REDIS_PASSWORD} --maxclients ${REDIS_MAXCLIENTS:-10000}
+    command: redis-server --dir /tmp --appendonly no --save "" --requirepass ${REDIS_PASSWORD} --maxclients ${REDIS_MAXCLIENTS:-10000} --maxmemory ${REDIS_MAXMEMORY:-1536mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-volatile-lru} --lazyfree-lazy-eviction yes
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
@@ -80,6 +80,9 @@ services:
   app:
     image: ${APP_IMAGE:-ghcr.io/fawney19/aether:latest}
     container_name: aether-app
+    volumes:
+      - /opt/aether/frontend-dist:/srv/frontend:ro
+    stop_grace_period: 120s
     user: "0:0"
     env_file:
       - .env
@@ -92,6 +95,7 @@ services:
       AETHER_DOCKER_UPDATE_COMMAND: ${AETHER_DOCKER_UPDATE_COMMAND:-./update.sh}
       AETHER_LOG_DESTINATION: stdout
       AETHER_LOG_FORMAT: ${AETHER_LOG_FORMAT:-pretty}
+      AETHER_GATEWAY_STATIC_DIR: /srv/frontend
       APP_PORT: ${APP_PORT:-8084}
       AETHER_GATEWAY_AUTO_PREPARE_DATABASE: ${AETHER_GATEWAY_AUTO_PREPARE_DATABASE:-true}
     depends_on:

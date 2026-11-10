@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-click updater for Docker Compose deployments.
 #
-# This updates the app container image and recreates only the app service. It is
-# intentionally not a hot patch of the running Rust process.
+# This applies schema migrations with the new image before recreating the app
+# service. It is intentionally not a hot patch of the running Rust process.
 
 set -euo pipefail
 
@@ -114,6 +114,10 @@ case "$MODE" in
         ;;
 esac
 
+[[ -n "${APP_SERVICE}" && ${#APP_SERVICE} -le 128 \
+    && "${APP_SERVICE}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] \
+    || die "service name contains unsafe characters"
+
 if [[ "${MODE}" == "local-build" || "${LOCAL_BUILD}" == "true" ]]; then
     [[ "${PREPARE_ONLY}" != "true" ]] || die "--prepare is only supported for Docker Compose deployments"
     deploy_script="${SCRIPT_DIR}/deploy.sh"
@@ -205,7 +209,7 @@ for file in "${COMPOSE_FILES[@]}"; do
 done
 
 services="$(compose_config --services)"
-if ! grep -qx "${APP_SERVICE}" <<< "${services}"; then
+if ! grep -Fqx -- "${APP_SERVICE}" <<< "${services}"; then
     die "service '${APP_SERVICE}' not found in compose config"
 fi
 
@@ -214,6 +218,42 @@ echo ">>> App service: ${APP_SERVICE}"
 
 compose_pull_app() {
     compose pull "${APP_SERVICE}"
+}
+
+compose_app_image() {
+    local image=""
+    if image="$(compose_config --format json 2>/dev/null | python3 -c '
+import json
+import sys
+
+try:
+    image = json.load(sys.stdin)["services"][sys.argv[1]]["image"]
+except (KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+
+if not isinstance(image, str) or not image.strip():
+    raise SystemExit(1)
+print(image.strip())
+' "${APP_SERVICE}")"; then
+        printf '%s\n' "${image}"
+        return 0
+    fi
+
+    # docker-compose v1 does not support `config --format json`. Keep an
+    # explicit override available without silently falling back to the old
+    # running container's image.
+    if [[ -n "${AETHER_FRONTEND_IMAGE:-}" ]]; then
+        printf '%s\n' "${AETHER_FRONTEND_IMAGE}"
+        return 0
+    fi
+    return 1
+}
+
+compose_migrate_app() {
+    # The image entrypoint is aether-gateway. A one-off container uses the new
+    # image and existing service environment without publishing app ports,
+    # restarting dependencies, or replacing the running app.
+    compose run --rm --no-deps -T "${APP_SERVICE}" db prepare
 }
 
 compose_up_app() {
@@ -229,6 +269,33 @@ compose_up_app() {
 
     up_args+=("${APP_SERVICE}")
     compose "${up_args[@]}"
+}
+
+refresh_local_frontend() {
+    local sync_script="${COMPOSE_DIR}/sync-frontend-from-image.sh"
+    if [[ ! -f "${sync_script}" && -f "${SCRIPT_DIR}/sync-frontend-from-image.sh" ]]; then
+        sync_script="${SCRIPT_DIR}/sync-frontend-from-image.sh"
+    fi
+    if [[ ! -f "${sync_script}" ]]; then
+        return 0
+    fi
+    if [[ "${AETHER_SYNC_LOCAL_FRONTEND:-true}" != "true" ]]; then
+        echo ">>> Local frontend refresh disabled by AETHER_SYNC_LOCAL_FRONTEND."
+        return 0
+    fi
+
+    local image=""
+    image="$(compose_app_image)" \
+        || die "could not resolve the configured image for '${APP_SERVICE}'; set AETHER_FRONTEND_IMAGE"
+    echo ">>> Rebuilding local frontend customizations from the pulled image..."
+    AETHER_FRONTEND_IMAGE="${image}" bash "${sync_script}" \
+        || die "local frontend refresh failed; app was not recreated"
+}
+
+compose_supports_wait() {
+    local help
+    help="$(compose up --help 2>/dev/null)" || return 1
+    grep -Fq -- '--wait' <<<"${help}"
 }
 
 wait_healthy() {
@@ -270,12 +337,22 @@ if [[ "${NO_PULL}" != "true" ]]; then
     compose_pull_app
 fi
 
+echo ">>> Applying schema migrations before replacing ${APP_SERVICE}..."
+compose_migrate_app \
+    || die "database migration failed; app was not recreated; no running service was stopped"
+
+refresh_local_frontend
+
 echo ">>> Recreating ${APP_SERVICE}..."
-compose_up_app true || {
-    echo ">>> Compose up with --wait failed; falling back to simple recreate..."
+if compose_supports_wait; then
+    compose_up_app true \
+        || die "updated app failed to become healthy; inspect the container before retrying"
+else
+    echo ">>> Compose does not support --wait; using explicit health polling..."
     compose_up_app false
-    wait_healthy || true
-}
+    wait_healthy \
+        || die "updated app failed to become healthy; inspect the container before retrying"
+fi
 
 echo ">>> Current services:"
 compose ps
