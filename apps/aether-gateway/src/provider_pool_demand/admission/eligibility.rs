@@ -53,30 +53,15 @@ pub(super) async fn current_skip_reason(
         .config
         .as_ref()
         .and_then(|config| config.get("pool_advanced"));
-    let model = plan.model_name.as_deref().unwrap_or_default();
-    let exhausted =
-        pool_policy::admin_pool_key_model_quota_exhausted(&key, &provider.provider_type, model)
-            .unwrap_or_else(|| {
-                pool_policy::admin_pool_key_account_quota_exhausted(&key, &provider.provider_type)
-            });
-    let skip_exhausted = pool
-        .and_then(|config| config.get("ignore_exhausted_accounts"))
-        .and_then(serde_json::Value::as_bool)
-        .map(|ignore| !ignore)
-        .unwrap_or(true);
-    let reserve_reached = pool
-        .and_then(|config| config.get("reserve_minimum_quota"))
+    let account_quota_exhausted = pool
+        .and_then(|config| config.get("skip_exhausted_accounts"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
-        && pool_policy::admin_pool_key_minimum_quota_reached(
+        && pool_policy::admin_pool_key_account_quota_exhausted(
             &key,
             &provider.provider_type,
-            Some(model),
         );
-    if pool_policy::admin_pool_key_model_quota_hard_blocked(&key, &provider.provider_type, model)
-        || reserve_reached
-        || (skip_exhausted && exhausted)
-    {
+    if account_quota_exhausted {
         return Ok(Some("account_quota_exhausted"));
     }
     if pool.is_some() {
