@@ -6,6 +6,41 @@ import PoolKeyStatsPanel from '@/features/pool/components/PoolKeyStatsPanel.vue'
 import { createI18n } from '@/i18n'
 
 describe('pool key display panels', () => {
+  it('renders account totals alongside codex cycle stats', () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(PoolKeyStatsPanel, {
+      cycle: true,
+      cycleGroups: [
+        {
+          code: '5h',
+          label: '5H',
+          metrics: [{ key: 'request_count', label: '请求', value: '12', missing: false, numericValue: 12 }],
+        },
+        {
+          code: 'weekly',
+          label: '周',
+          metrics: [{ key: 'request_count', label: '请求', value: '88', missing: false, numericValue: 88 }],
+        },
+      ],
+      accountMetrics: [
+        { key: 'request_count', label: '请求', value: '460,954', missing: false, numericValue: 460_954 },
+        { key: 'total_tokens', label: 'Token', value: '14.8B', missing: false, numericValue: 14_844_853_503 },
+        { key: 'total_cost_usd', label: '费用', value: '$10,334.39', missing: false, numericValue: 10_334.39 },
+      ],
+    })
+    app.use(createI18n())
+    app.mount(root)
+
+    const requestValue = root.querySelector('[data-testid="pool-stats-cycle-request_count"]')
+    const costValue = root.querySelector('[data-testid="pool-stats-cycle-total_cost_usd"]')
+    expect(requestValue?.textContent?.trim()).toBe('460,954/88')
+    expect(costValue?.textContent?.trim()).toBe('$10,334.39/-')
+
+    app.unmount()
+    root.remove()
+  })
+
   it('renders codex cycle stats with stable test hooks', () => {
     const root = document.createElement('div')
     document.body.appendChild(root)

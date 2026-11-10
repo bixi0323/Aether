@@ -112,16 +112,19 @@ const cycleMetricRows = computed(() => {
   if (!largeGroup) return []
 
   return CYCLE_METRIC_KEYS.map((key) => {
+    const accountMetric = props.accountMetrics.find(metric => metric.key === key)
     const smallMetric = metricForGroup(smallGroup, key)
     const largeMetric = metricForGroup(largeGroup, key)
-    const hasComparison = Boolean(smallGroup)
+    const hasComparison = Boolean(accountMetric || smallGroup)
     return {
       key,
       label: CYCLE_METRIC_LABELS[key],
       hasComparison,
-      smallValue: smallMetric.value,
+      smallValue: accountMetric?.value ?? smallMetric.value,
       largeValue: largeMetric.value,
-      valueText: hasComparison ? `${smallMetric.value}/${largeMetric.value}` : largeMetric.value,
+      valueText: hasComparison
+        ? `${accountMetric?.value ?? smallMetric.value}/${largeMetric.value}`
+        : largeMetric.value,
     }
   })
 })
