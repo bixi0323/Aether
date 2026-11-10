@@ -1656,6 +1656,16 @@ fn request_extension_key_is_cross_format_safe(
     namespace: &str,
     key: &str,
 ) -> bool {
+    if location == "messages[]"
+        && matches!(
+            (source, target),
+            (FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact, FormatId::OpenAiChat)
+        )
+        && matches!(namespace, "openai_responses" | "openai_cli")
+        && matches!(key, "id" | "status")
+    {
+        return true;
+    }
     if matches!(
         source,
         FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
@@ -2765,7 +2775,10 @@ fn validate_openai_responses_namespace_tools_to_chat(
 }
 
 fn validate_claude_cross_format_request(body: &Value, target: FormatId) -> Result<(), FormatError> {
-    if claude_request_contains_provider_cache_control(body) {
+    // Claude cache breakpoints are optional request hints. OpenAI Chat has no
+    // equivalent field, so dropping them preserves the request semantics and
+    // keeps Claude Code compatible with Chat-only providers such as DeepSeek.
+    if target != FormatId::OpenAiChat && claude_request_contains_provider_cache_control(body) {
         return Err(FormatError::LossyConversionBlocked {
             source_format: FormatId::ClaudeMessages.as_str().to_string(),
             target_format: target.as_str().to_string(),
@@ -4879,26 +4892,35 @@ mod tests {
     }
 
     #[test]
-    fn pure_claude_to_openai_chat_blocks_cache_control_loss() {
+    fn pure_claude_to_openai_chat_degrades_cache_control_hints() {
         let body = json!({
             "model": "claude-sonnet",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
             "system": [{
                 "type": "text",
                 "text": "Cache this.",
-                "cache_control": {"type": "ephemeral"}
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
             }],
-            "messages": [{"role": "user", "content": "hello"}],
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"}
+                }]
+            }],
             "max_tokens": 64
         });
 
-        let error = convert_request_pure("claude:messages", "openai:chat", &body)
-            .expect_err("Claude cache_control should fail closed cross-format");
+        let converted = convert_request_pure("claude:messages", "openai:chat", &body)
+            .expect("Chat-only providers should accept Claude cache hints")
+            .value;
 
-        assert!(matches!(
-            error,
-            super::FormatError::LossyConversionBlocked { ref field, .. }
-                if field == "cache_control"
-        ));
+        assert!(!converted.to_string().contains("cache_control"));
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(converted["messages"][0]["content"], "Cache this.");
+        assert_eq!(converted["messages"][1]["role"], "user");
+        assert_eq!(converted["messages"][1]["content"], "hello");
     }
 
     #[test]
@@ -4987,6 +5009,51 @@ mod tests {
         assert_eq!(converted["model"], "gpt-source");
         assert_eq!(converted["messages"][0]["content"], "hello");
         assert!(converted.get("client_metadata").is_none());
+    }
+
+    #[test]
+    fn openai_responses_message_identity_and_status_are_ignored_for_chat() {
+        let body = json!({
+            "model": "gpt-source",
+            "input": [
+                {
+                    "type": "message",
+                    "id": "msg_user",
+                    "status": "completed",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}]
+                },
+                {
+                    "type": "message",
+                    "id": "msg_assistant",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "world"}]
+                }
+            ]
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("message identity and status should not block Chat conversion")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime message identity and status should not block Chat conversion");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["messages"][0]["content"], "hello");
+        assert_eq!(pure["messages"][1]["content"], "world");
+        for message in pure["messages"]
+            .as_array()
+            .expect("converted Chat messages")
+        {
+            assert!(message.get("id").is_none());
+            assert!(message.get("status").is_none());
+        }
     }
 
     #[test]
