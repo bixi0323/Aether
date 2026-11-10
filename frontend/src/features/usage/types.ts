@@ -75,6 +75,15 @@ export interface ApiFormatStatsItem {
   avgResponseTime: string
 }
 
+// API 密钥统计
+export interface ApiKeyStatsItem {
+  id: string
+  name: string
+  requests: number
+  tokens: number
+  cost: number
+}
+
 // 请求记录
 // 请求状态类型
 export type RequestStatus = 'pending' | 'streaming' | 'completed' | 'failed' | 'cancelled'
@@ -153,6 +162,12 @@ export interface DateRangeParams {
   granularity?: 'hour' | 'day' | 'week' | 'month'
   timezone?: string
   tz_offset_minutes?: number
+}
+
+export interface UsageAnalysisFilters extends DateRangeParams {
+  user_id?: string
+  model?: string
+  provider?: string
 }
 
 // 时间段选项

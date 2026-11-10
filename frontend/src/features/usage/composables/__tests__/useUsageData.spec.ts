@@ -8,6 +8,7 @@ const {
   getUsageByModelMock,
   getUsageByProviderMock,
   getUsageByApiFormatMock,
+  getUsageByApiKeyMock,
   meGetUsageMock,
 } = vi.hoisted(() => ({
   getAllUsageRecordsMock: vi.fn(),
@@ -16,6 +17,7 @@ const {
   getUsageByModelMock: vi.fn(),
   getUsageByProviderMock: vi.fn(),
   getUsageByApiFormatMock: vi.fn(),
+  getUsageByApiKeyMock: vi.fn(),
   meGetUsageMock: vi.fn(),
 }))
 
@@ -27,6 +29,7 @@ vi.mock('@/api/usage', () => ({
     getUsageByModel: getUsageByModelMock,
     getUsageByProvider: getUsageByProviderMock,
     getUsageByApiFormat: getUsageByApiFormatMock,
+    getUsageByApiKey: getUsageByApiKeyMock,
   },
 }))
 
@@ -98,7 +101,66 @@ describe('useUsageData', () => {
     getUsageByModelMock.mockResolvedValue([])
     getUsageByProviderMock.mockResolvedValue([])
     getUsageByApiFormatMock.mockResolvedValue([])
+    getUsageByApiKeyMock.mockResolvedValue([])
     meGetUsageMock.mockResolvedValue({})
+  })
+
+  it('loads API-key usage with the active usage analysis filters', async () => {
+    const isAdminPage = ref(true)
+    const { loadStats, apiKeyStats } = useUsageData({ isAdminPage })
+    const filters = {
+      preset: 'last7days',
+      tz_offset_minutes: 0,
+      user_id: 'user-1',
+      model: 'gpt-5',
+      provider: 'OpenAI',
+    }
+
+    getUsageStatsMock.mockResolvedValue({
+      total_requests: 42,
+      total_tokens: 120000,
+      total_cost: 3.25,
+      avg_response_time: 500,
+    })
+    getUsageByApiKeyMock.mockResolvedValue([{
+      id: 'key-1',
+      name: ' Production ',
+      value: 3.25,
+      requests: 42,
+      tokens: 120000,
+      cost: 3.25,
+    }])
+
+    await loadStats(filters)
+
+    expect(getUsageByApiKeyMock).toHaveBeenCalledWith({
+      ...filters,
+      include_inactive: true,
+    }, undefined)
+    expect(apiKeyStats.value).toEqual([{
+      id: 'key-1',
+      name: 'Production',
+      requests: 42,
+      tokens: 120000,
+      cost: 3.25,
+    }])
+  })
+
+  it('keeps the API-key table in loading state until the aggregation returns', async () => {
+    const keyStats = createDeferred<[]>()
+    getUsageByApiKeyMock.mockReturnValue(keyStats.promise)
+    const isAdminPage = ref(true)
+    const { loadStats, isLoadingApiKeyStats } = useUsageData({ isAdminPage })
+
+    const loading = loadStats({ preset: 'today' })
+    await flushMicrotasks()
+
+    expect(isLoadingApiKeyStats.value).toBe(true)
+
+    keyStats.resolve([])
+    await loading
+
+    expect(isLoadingApiKeyStats.value).toBe(false)
   })
 
   it('keeps admin records when stats refresh fails', async () => {

@@ -6,8 +6,10 @@ import type {
   ModelStatsItem,
   ProviderStatsItem,
   ApiFormatStatsItem,
+  ApiKeyStatsItem,
   UsageRecord,
   DateRangeParams,
+  UsageAnalysisFilters,
   EnhancedModelStatsItem
 } from '../types'
 import { createDefaultStats } from '../types'
@@ -59,6 +61,9 @@ export function useUsageData(options: UseUsageDataOptions) {
   const modelStats = ref<ModelStatsItem[]>([])
   const providerStats = ref<ProviderStatsItem[]>([])
   const apiFormatStats = ref<ApiFormatStatsItem[]>([])
+  const apiKeyStats = ref<ApiKeyStatsItem[]>([])
+  const isLoadingApiKeyStats = ref(isAdminPage.value)
+  const apiKeyStatsError = ref(false)
 
   // 记录数据 - 只存储当前页
   const currentRecords = ref<UsageRecord[]>([])
@@ -127,7 +132,7 @@ export function useUsageData(options: UseUsageDataOptions) {
   }
 
   // 加载统计数据（不加载记录）
-  async function loadStats(dateRange?: DateRangeParams, options: LoadStatsOptions = {}): Promise<boolean> {
+  async function loadStats(dateRange?: UsageAnalysisFilters, options: LoadStatsOptions = {}): Promise<boolean> {
     const requestId = ++loadStatsRequestId
     isLoadingStats.value = true
     currentDateRange.value = dateRange
@@ -135,11 +140,14 @@ export function useUsageData(options: UseUsageDataOptions) {
     try {
       if (isAdminPage.value) {
         // 管理员页面顺序加载统计数据，避免刷新使用记录时瞬时打满后端 worker。
+        isLoadingApiKeyStats.value = true
+        apiKeyStatsError.value = false
         if (!options.preserveOnFailure) {
           stats.value = createDefaultStats()
           modelStats.value = []
           providerStats.value = []
           apiFormatStats.value = []
+          apiKeyStats.value = []
           availableModels.value = []
           availableProviders.value = []
         }
@@ -150,6 +158,36 @@ export function useUsageData(options: UseUsageDataOptions) {
           hadFailure = true
           if (getErrorStatus(error) !== 403) {
             log.error('加载统计数据失败:', error)
+          }
+        }
+
+        // 密钥聚合在单核服务器上耗时明显高于其他统计，优先请求，避免被后续串行请求拖住。
+        try {
+          const apiKeyData = await usageApi.getUsageByApiKey({
+            ...dateRange,
+            provider: dateRange?.provider,
+            include_inactive: true,
+          }, requestOptions)
+          if (requestId !== loadStatsRequestId) {
+            return true
+          }
+
+          apiKeyStats.value = apiKeyData.map(item => ({
+            id: item.id,
+            name: item.name?.trim() || item.id,
+            requests: item.requests,
+            tokens: item.tokens,
+            cost: item.cost,
+          }))
+        } catch (error) {
+          if (requestId !== loadStatsRequestId) {
+            return true
+          }
+          apiKeyStatsError.value = true
+          markFailure(error)
+        } finally {
+          if (requestId === loadStatsRequestId) {
+            isLoadingApiKeyStats.value = false
           }
         }
 
@@ -735,6 +773,9 @@ export function useUsageData(options: UseUsageDataOptions) {
     modelStats,
     providerStats,
     apiFormatStats,
+    apiKeyStats,
+    isLoadingApiKeyStats,
+    apiKeyStatsError,
     currentRecords,
     totalRecords,
 

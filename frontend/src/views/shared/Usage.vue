@@ -46,20 +46,27 @@
       <!-- 管理员：模型 + 提供商 + API格式（3列） -->
       <div
         v-if="isAdminPage"
-        class="grid grid-cols-1 lg:grid-cols-3 gap-4"
+        class="space-y-4"
       >
-        <UsageModelTable
-          :data="enhancedModelStats"
-          :is-admin="authStore.canAccessAdmin"
+        <UsageApiKeyTable
+          :data="apiKeyStats"
+          :is-loading="isLoadingApiKeyStats"
+          :has-error="apiKeyStatsError"
         />
-        <UsageProviderTable
-          :data="providerStats"
-          :is-admin="authStore.canAccessAdmin"
-        />
-        <UsageApiFormatTable
-          :data="apiFormatStats"
-          :is-admin="authStore.canAccessAdmin"
-        />
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <UsageModelTable
+            :data="enhancedModelStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+          <UsageProviderTable
+            :data="providerStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+          <UsageApiFormatTable
+            :data="apiFormatStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+        </div>
       </div>
       <!-- 用户：模型 + API格式（2列） -->
       <div
@@ -145,6 +152,7 @@ import {
   UsageModelTable,
   UsageProviderTable,
   UsageApiFormatTable,
+  UsageApiKeyTable,
   UsageRecordsTable,
   ActivityHeatmapCard,
   RequestDetailDrawer,
@@ -257,6 +265,9 @@ const {
   isLoadingRecords,
   providerStats,
   apiFormatStats,
+  apiKeyStats,
+  isLoadingApiKeyStats,
+  apiKeyStatsError,
   currentRecords,
   totalRecords,
   enhancedModelStats,

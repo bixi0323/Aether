@@ -5,6 +5,7 @@ import type { ImageProgress } from './requestTrace'
 
 const ACTIVITY_HEATMAP_CACHE_TTL_MS = 30 * 60 * 1000
 const USAGE_ANALYTICS_CACHE_TTL_MS = 30 * 1000
+const USAGE_API_KEY_ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000
 const USAGE_ANALYTICS_REQUEST_TIMEOUT_MS = 120 * 1000
 
 export interface UsageRecord {
@@ -122,6 +123,35 @@ export interface UsageByApiFormat {
   avg_response_time_ms: number
   cache_read_tokens?: number
   cache_hit_rate?: number
+}
+
+export interface UsageByApiKey {
+  rank: number
+  id: string
+  name: string
+  value: number
+  requests: number
+  tokens: number
+  cost: number
+}
+
+type UsageByApiKeyFilters = Pick<
+  UsageFilters,
+  'user_id' | 'model' | 'start_date' | 'end_date' | 'preset' | 'timezone' | 'tz_offset_minutes'
+> & {
+  provider?: string
+  provider_name?: string
+  include_inactive?: boolean
+  exclude_admin?: boolean
+  limit?: number
+}
+
+interface UsageByApiKeyResponse {
+  items: UsageByApiKey[]
+  total: number
+  metric: string
+  start_date?: string | null
+  end_date?: string | null
 }
 
 export interface UsageFilters {
@@ -471,6 +501,37 @@ export const usageApi = {
     options?: UsageRequestOptions
   ): Promise<UsageByApiFormat[]> {
     return this.getUsageAggregation<UsageByApiFormat[]>('api_format', filters, options)
+  },
+
+  async getUsageByApiKey(
+    filters?: UsageByApiKeyFilters,
+    options?: UsageRequestOptions
+  ): Promise<UsageByApiKey[]> {
+    const params = compactParams({
+      ...filters,
+      provider_name: filters?.provider_name ?? filters?.provider,
+      provider: undefined,
+      include_inactive: filters?.include_inactive ?? true,
+      metric: 'cost',
+      order: 'desc',
+      limit: filters?.limit ?? 100,
+      offset: 0,
+    })
+    const cacheKey = `usage-aggregation-api-key-${JSON.stringify(params)}${options?.skipCache ? ':fresh' : ''}`
+    return cachedRequest(
+      cacheKey,
+      async () => {
+        const response = await apiClient.get<UsageByApiKeyResponse>(
+          '/api/admin/stats/leaderboard/api-keys',
+          {
+            params,
+            timeout: USAGE_ANALYTICS_REQUEST_TIMEOUT_MS,
+          }
+        )
+        return response.data.items
+      },
+      options?.skipCache ? 0 : USAGE_API_KEY_ANALYTICS_CACHE_TTL_MS
+    )
   },
 
   async getUserUsage(userId: string, filters?: UsageFilters): Promise<{
