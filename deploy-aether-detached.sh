@@ -50,7 +50,7 @@ rollback_app() {
   ROLLED_BACK=1
   set +e
   echo "Rolling back application to $OLD_IMAGE"
-  env -u COMPOSE_FILE APP_IMAGE="$OLD_IMAGE" docker compose \
+  env -u COMPOSE_FILE APP_IMAGE="$OLD_IMAGE" AETHER_DEPLOY_IMAGE="$OLD_IMAGE" docker compose \
     -f "$COMPOSE_BASE" up -d --pull never --no-deps --force-recreate app
   local rc=$?
   set -e
