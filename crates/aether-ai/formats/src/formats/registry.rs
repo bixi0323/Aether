@@ -1670,7 +1670,10 @@ fn request_extension_key_is_cross_format_safe(
     if location == "messages[].content[]"
         && matches!(
             (source, target),
-            (FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact, FormatId::OpenAiChat)
+            (
+                FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+                FormatId::OpenAiChat
+            )
         )
         && namespace == "openai"
         && key == "omit_reasoning_parts"
@@ -1707,6 +1710,22 @@ fn request_extension_key_is_cross_format_safe(
                 FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
                 "openai",
             ) | (
+                FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+                FormatId::OpenAiChat,
+                "openai_responses" | "openai_cli",
+            )
+        )
+    {
+        return true;
+    }
+    // Responses content blocks and reasoning history items carry their original
+    // item type as a transport sidecar. Chat derives the emitted block type from
+    // the canonical block, so the sidecar is intentionally consumed.
+    if location == "messages[].content[]"
+        && key == "item_type"
+        && matches!(
+            (source, target, namespace),
+            (
                 FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
                 FormatId::OpenAiChat,
                 "openai_responses" | "openai_cli",
@@ -5279,6 +5298,37 @@ mod tests {
         assert_eq!(pure, runtime);
         assert!(!pure.to_string().contains("omit_reasoning_parts"));
         assert_eq!(pure["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn openai_responses_content_item_type_is_ignored_for_chat() {
+        let body = json!({
+            "model": "deepseek-flash",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "hello",
+                    "item_type": "input_text"
+                }]
+            }]
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("Responses content transport metadata should not block Chat conversion")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime Responses content transport metadata should not block Chat conversion");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["messages"][0]["content"], "hello");
+        assert!(!pure.to_string().contains("item_type"));
     }
 
     #[test]
