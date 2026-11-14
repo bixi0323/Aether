@@ -46,23 +46,30 @@
         />
       </div>
 
-      <!-- 管理员：模型 + 提供商 + API格式（3列） -->
+      <!-- 管理员：密钥聚合 + 模型 / 提供商 / API格式 -->
       <div
         v-if="isAdminPage"
-        class="grid grid-cols-1 lg:grid-cols-3 gap-4"
+        class="space-y-4"
       >
-        <UsageModelTable
-          :data="enhancedModelStats"
-          :is-admin="authStore.canAccessAdmin"
+        <UsageApiKeyTable
+          :data="apiKeyStats"
+          :is-loading="isLoadingApiKeyStats"
+          :has-error="apiKeyStatsError"
         />
-        <UsageProviderTable
-          :data="providerStats"
-          :is-admin="authStore.canAccessAdmin"
-        />
-        <UsageApiFormatTable
-          :data="apiFormatStats"
-          :is-admin="authStore.canAccessAdmin"
-        />
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <UsageModelTable
+            :data="enhancedModelStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+          <UsageProviderTable
+            :data="providerStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+          <UsageApiFormatTable
+            :data="apiFormatStats"
+            :is-admin="authStore.canAccessAdmin"
+          />
+        </div>
       </div>
       <!-- 用户：模型 + API格式（2列） -->
       <div
@@ -186,6 +193,7 @@ import { PanelTopClose, PanelTopOpen, X } from 'lucide-vue-next'
 import UsageModelTable from '@/features/usage/components/UsageModelTable.vue'
 import UsageProviderTable from '@/features/usage/components/UsageProviderTable.vue'
 import UsageApiFormatTable from '@/features/usage/components/UsageApiFormatTable.vue'
+import UsageApiKeyTable from '@/features/usage/components/UsageApiKeyTable.vue'
 import UsageRecordsTable from '@/features/usage/components/UsageRecordsTable.vue'
 import ActivityHeatmapCard from '@/features/usage/components/ActivityHeatmapCard.vue'
 import RequestDetailDrawer from '@/features/usage/components/RequestDetailDrawer.vue'
@@ -303,6 +311,9 @@ const {
   isLoadingRecords,
   providerStats,
   apiFormatStats,
+  apiKeyStats,
+  isLoadingApiKeyStats,
+  apiKeyStatsError,
   currentRecords,
   totalRecords,
   enhancedModelStats,
