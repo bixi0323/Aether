@@ -1036,11 +1036,14 @@ impl AppState {
     }
 
     pub(crate) fn invalidate_provider_health_routing_caches(&self) {
-        self.data.clear_minimal_candidate_selection_cache();
         self.data.clear_provider_catalog_cache();
-        self.candidate_row_page_cache.clear();
         self.candidate_page_cache.clear();
         self.candidate_resolved_page_cache.clear();
+        // Runtime health feedback does not change provider/model/key topology.
+        // Keep the minimal and raw row caches intact so a burst of health writes
+        // cannot repeatedly cancel their singleflight loads and cause a retry
+        // loop. Materialized pages still include health-derived eligibility and
+        // must be refreshed immediately.
         // Transport snapshots contain static provider/endpoint/key configuration,
         // including `is_active`, but not runtime health, circuit-breaker, or
         // adaptive projections. Keeping them avoids a global three-query transport
