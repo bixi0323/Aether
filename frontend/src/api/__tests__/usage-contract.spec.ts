@@ -154,6 +154,57 @@ describe('usageApi contract alignment', () => {
     })
   })
 
+  it('loads API-key usage from the leaderboard endpoint', async () => {
+    getMock.mockResolvedValueOnce({
+      data: {
+        items: [{
+          rank: 1,
+          id: 'key-1',
+          name: 'Production',
+          value: 3.25,
+          requests: 42,
+          tokens: 120000,
+          cost: 3.25,
+        }],
+        total: 1,
+        metric: 'cost',
+      },
+    })
+
+    const result = await usageApi.getUsageByApiKey({
+      preset: 'last7days',
+      user_id: 'user-1',
+      model: 'gpt-5',
+      provider: 'OpenAI',
+      include_inactive: true,
+    })
+
+    expect(getMock).toHaveBeenCalledWith('/api/admin/stats/leaderboard/api-keys', {
+      params: {
+        preset: 'last7days',
+        user_id: 'user-1',
+        model: 'gpt-5',
+        provider_name: 'OpenAI',
+        include_inactive: true,
+        metric: 'cost',
+        order: 'desc',
+        limit: 100,
+        offset: 0,
+      },
+      timeout: 120000,
+    })
+    expect(cachedRequestMock).toHaveBeenLastCalledWith(
+      expect.stringContaining('usage-aggregation-api-key'),
+      expect.any(Function),
+      5 * 60 * 1000,
+    )
+    expect(result).toEqual([expect.objectContaining({
+      id: 'key-1',
+      name: 'Production',
+      requests: 42,
+    })])
+  })
+
   it('passes the WebSocket usage type filter to the admin records endpoint', async () => {
     getMock.mockResolvedValueOnce({
       data: {
