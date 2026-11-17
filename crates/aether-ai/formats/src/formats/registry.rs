@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::formats::openai::namespace::NamespaceToolAliases;
 use crate::formats::{
@@ -123,6 +123,8 @@ pub fn convert_request_pure_with_context(
     let source = parse_format(source_format)?;
     let target = parse_format(target_format)?;
     let normalized_body = normalize_openai_responses_additional_tools(source, target, body)?;
+    let normalized_body =
+        normalize_openai_responses_agent_messages(source, target, &normalized_body);
     let request = parse_request(source_format, &normalized_body, &pure_ctx)?;
     validate_openai_responses_target_contract(target_format, &normalized_body)?;
     validate_request_conversion(
@@ -162,6 +164,8 @@ pub fn convert_request(
     };
     let body = expanded_body.as_ref().unwrap_or(body);
     let normalized_body = normalize_openai_responses_additional_tools(source, target, body)?;
+    let normalized_body =
+        normalize_openai_responses_agent_messages(source, target, &normalized_body);
     validate_openai_responses_target_contract(target_format, &normalized_body)?;
     let mut request = parse_request(source_format, &normalized_body, ctx)?;
     validate_runtime_request_conversion(
@@ -256,6 +260,96 @@ fn is_openai_responses_additional_tools_item(value: &Value) -> bool {
         && object
             .keys()
             .all(|key| matches!(key.as_str(), "type" | "role" | "tools"))
+}
+
+// Codex collaboration mail uses a Responses-only agent_message item. Chat-based
+// providers can preserve its meaning as user input after flattening the transport
+// payload, while Responses targets must keep the native item unchanged.
+fn normalize_openai_responses_agent_messages(
+    source: FormatId,
+    target: FormatId,
+    body: &Value,
+) -> Value {
+    if !matches!(
+        source,
+        FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+    ) || matches!(
+        target,
+        FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact
+    ) {
+        return body.clone();
+    }
+
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return body.clone();
+    };
+    if !input.iter().any(is_openai_responses_agent_message) {
+        return body.clone();
+    }
+
+    let mut normalized = body.clone();
+    let input = normalized
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .expect("Responses request input array was checked above");
+    for item in input {
+        if is_openai_responses_agent_message(item) {
+            *item = normalize_openai_responses_agent_message(item);
+        }
+    }
+    normalized
+}
+
+fn is_openai_responses_agent_message(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|item_type| item_type.trim().eq_ignore_ascii_case("agent_message"))
+}
+
+fn normalize_openai_responses_agent_message(item: &Value) -> Value {
+    let content = item
+        .get("content")
+        .map(normalize_openai_responses_agent_message_content)
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": content,
+    })
+}
+
+fn normalize_openai_responses_agent_message_content(content: &Value) -> Value {
+    let Value::Array(parts) = content else {
+        return content.clone();
+    };
+    Value::Array(
+        parts
+            .iter()
+            .map(|part| {
+                let is_encrypted_content =
+                    part.get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|part_type| {
+                            part_type.trim().eq_ignore_ascii_case("encrypted_content")
+                        });
+                if !is_encrypted_content {
+                    return part.clone();
+                }
+                let Some(text) = part
+                    .get("encrypted_content")
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+                else {
+                    return part.clone();
+                };
+                json!({
+                    "type": "input_text",
+                    "text": text,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn validate_runtime_request_conversion(
@@ -5929,6 +6023,50 @@ mod tests {
                     if field == expected_field
             ));
         }
+    }
+
+    #[test]
+    fn openai_responses_agent_message_converts_to_chat_user_message() {
+        let body = json!({
+            "model": "deepseek-flash",
+            "input": [{
+                "type": "agent_message",
+                "id": "amsg_worker_task",
+                "author": "/root",
+                "recipient": "/root/worker",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n"
+                    },
+                    {
+                        "type": "encrypted_content",
+                        "encrypted_content": "Check who owns the API migration."
+                    }
+                ],
+                "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"}
+            }]
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("Responses agent messages should convert to Chat")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime Responses agent message conversion should succeed");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(pure["messages"][0]["role"], "user");
+        assert_eq!(
+            pure["messages"][0]["content"],
+            "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nCheck who owns the API migration."
+        );
+        assert!(!pure.to_string().contains("agent_message"));
+        assert!(!pure.to_string().contains("encrypted_content"));
     }
 
     #[test]
