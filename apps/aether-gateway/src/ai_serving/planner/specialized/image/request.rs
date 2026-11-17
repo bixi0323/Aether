@@ -11,6 +11,7 @@ use crate::ai_serving::planner::spec_metadata::local_openai_image_spec_metadata;
 use crate::ai_serving::pure::normalize_openai_image_request_with_options;
 use crate::ai_serving::transport::antigravity::is_antigravity_provider_transport;
 use crate::ai_serving::transport::{
+    apply_standard_provider_request_body_rules_with_request_headers,
     build_grok_browser_headers, build_grok_upstream_url, build_openai_image_headers,
     build_openai_image_upstream_url, build_standard_provider_request_headers,
     openai_image_transport_unsupported_reason, resolve_openai_image_auth, GrokHeaderInput,
@@ -234,6 +235,31 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         transport.provider.provider_type.as_str(),
         provider_api_format,
     );
+    let Some(provider_request_body) =
+        apply_openai_image_provider_request_body_rules(
+            provider_request_body,
+            transport.endpoint.body_rules.as_ref(),
+            body_json,
+            effective_headers,
+        )
+    else {
+        mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+            state,
+            input,
+            trace_id,
+            candidate,
+            attempt.candidate_index,
+            &attempt.candidate_id,
+            "transport_body_rules_apply_failed",
+            CandidateFailureDiagnostic::body_rules_apply_failed(
+                spec_metadata.api_format,
+                provider_api_format,
+                "openai_image_body_rules",
+            ),
+        )
+        .await;
+        return None;
+    };
     let Some(mut provider_request_headers) = (if is_grok {
         build_grok_browser_headers(GrokHeaderInput {
             transport,
@@ -552,4 +578,43 @@ fn chatgpt_web_image_internal_url(base_url: &str) -> String {
         base_url
     };
     format!("{base_url}/__aether/chatgpt-web-image")
+}
+
+fn apply_openai_image_provider_request_body_rules(
+    provider_request_body: Value,
+    body_rules: Option<&Value>,
+    original_request_body: &Value,
+    request_headers: &http::HeaderMap,
+) -> Option<Value> {
+    apply_standard_provider_request_body_rules_with_request_headers(
+        provider_request_body,
+        body_rules,
+        original_request_body,
+        request_headers,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use http::HeaderMap;
+    use serde_json::json;
+
+    use super::apply_openai_image_provider_request_body_rules;
+
+    #[test]
+    fn openai_image_body_rules_can_set_provider_only_output_format() {
+        let body = apply_openai_image_provider_request_body_rules(
+            json!({"model": "gpt-image-2", "prompt": "draw a cat"}),
+            Some(&json!([{
+                "action": "set",
+                "path": "output_format",
+                "value": "svg"
+            }])),
+            &json!({"model": "gpt-image-2", "prompt": "draw a cat"}),
+            &HeaderMap::new(),
+        )
+        .expect("body rules should apply");
+
+        assert_eq!(body["output_format"], "svg");
+    }
 }
