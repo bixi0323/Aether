@@ -670,7 +670,7 @@ fn validate_gemini_mixed_tool_model(
         format: target.as_str().to_string(),
         field: "tools".to_string(),
         reason: format!(
-            "model {target_model:?} does not support combining built-in tools with custom function declarations; use a Gemini 3 model"
+            "model {target_model:?} does not support combining built-in tools with custom function declarations; use a Gemini 3 or newer model"
         ),
     })
 }
@@ -3855,8 +3855,39 @@ mod tests {
         assert!(matches!(
             error,
             FormatError::InvalidTargetField { ref field, ref reason, .. }
-                if field == "tools" && reason.contains("Gemini 3")
+                if field == "tools" && reason.contains("Gemini 3 or newer")
         ));
+    }
+
+    #[test]
+    fn runtime_responses_to_gemini_accepts_mixed_tools_for_gemini_four() {
+        let body = json!({
+            "model": "gpt-5",
+            "input": "Search, then save the result.",
+            "tools": [
+                {"type": "web_search_preview"},
+                {
+                    "type": "function",
+                    "name": "save_result",
+                    "parameters": {"type": "object"}
+                }
+            ]
+        });
+        let context = FormatContext::default().with_mapped_model("gemini-4-hydrogen-sonar");
+
+        let converted = convert_request(
+            "openai:responses",
+            "gemini:generate_content",
+            &body,
+            &context,
+        )
+        .expect("Gemini 4 mixed tools should pass model capability validation");
+
+        assert_eq!(converted["model"], "gemini-4-hydrogen-sonar");
+        assert_eq!(
+            converted["toolConfig"]["includeServerSideToolInvocations"],
+            true
+        );
     }
 
     #[test]

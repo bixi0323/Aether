@@ -645,11 +645,19 @@ pub fn gemini_model_uses_thinking_level(model: &str) -> bool {
 }
 
 pub(crate) fn gemini_model_supports_mixed_tools(model: &str) -> bool {
-    model
-        .trim()
-        .to_ascii_lowercase()
-        .split('/')
-        .any(|part| part.starts_with("gemini-3"))
+    let model = model.trim().to_ascii_lowercase();
+    model.split('/').any(|part| {
+        let Some(version) = part.strip_prefix("gemini-") else {
+            return false;
+        };
+        let major = version
+            .split(|character: char| !character.is_ascii_digit())
+            .next()
+            .unwrap_or_default();
+        major
+            .parse::<u32>()
+            .is_ok_and(|major| major >= 3)
+    })
 }
 
 pub fn openai_model_supports_max_reasoning_effort(model: &str) -> bool {
