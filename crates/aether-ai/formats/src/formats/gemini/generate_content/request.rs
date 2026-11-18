@@ -1351,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_builtin_and_function_tools_require_gemini_three() {
+    fn mixed_builtin_and_function_tools_require_gemini_three_or_newer() {
         let canonical = CanonicalRequest {
             model: "gemini-2.5-pro".to_string(),
             tools: vec![CanonicalToolDefinition {
@@ -1370,6 +1370,7 @@ mod tests {
 
         assert!(to_raw(&canonical, "gemini-2.5-pro", false).is_none());
         assert!(to_raw(&canonical, "gemini-3-flash-preview", false).is_some());
+        assert!(to_raw(&canonical, "gemini-4-hydrogen-sonar", false).is_some());
     }
 
     #[test]
