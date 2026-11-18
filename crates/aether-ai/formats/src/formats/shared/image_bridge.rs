@@ -367,7 +367,7 @@ fn standard_openai_image_payload_output_format(item: &Value) -> Option<&'static 
             item.get("url")
                 .and_then(Value::as_str)
                 .and_then(parse_data_url)
-                .and_then(|(_, payload)| openai_image_payload_format_from_base64(payload))
+                .and_then(|(_, payload)| openai_image_payload_format_from_base64(&payload))
         })
 }
 
@@ -627,7 +627,7 @@ fn standard_openai_image_item_to_image_data(item: &Value) -> Option<Value> {
         .or_else(|| {
             url.as_deref()
                 .and_then(parse_data_url)
-                .and_then(|(_, payload)| openai_image_payload_format_from_base64(payload))
+                .and_then(|(_, payload)| openai_image_payload_format_from_base64(&payload))
         });
 
     let mut image = Map::new();

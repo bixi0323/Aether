@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use serde_json::{json, Map, Number, Value};
 
+use super::normalize_openai_image_output_format;
 use crate::formats::openai::responses::codex::CODEX_OPENAI_IMAGE_DEFAULT_MODEL;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
