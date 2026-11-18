@@ -316,7 +316,7 @@ fn json_value_len(value: &Option<serde_json::Value>) -> Option<usize> {
 pub fn augment_sync_report_context(
     report_context: Option<serde_json::Value>,
     provider_request_headers: &BTreeMap<String, String>,
-    _provider_request_body: &serde_json::Value,
+    provider_request_body: &serde_json::Value,
 ) -> serde_json::Result<Option<serde_json::Value>> {
     let mut report_context = match report_context {
         Some(serde_json::Value::Object(map)) => map,
@@ -329,7 +329,56 @@ pub fn augment_sync_report_context(
         serde_json::to_value(provider_request_headers)?,
     );
 
+    if report_context.contains_key("image_request") {
+        let requested_output_format = report_context
+            .get("image_request")
+            .and_then(|value| value.get("requested_output_format"))
+            .or_else(|| {
+                report_context
+                    .get("original_request_body")
+                    .and_then(|value| value.get("output_format"))
+            })
+            .and_then(known_image_output_format);
+        let provider_request_output_format = provider_request_body
+            .get("output_format")
+            .and_then(known_image_output_format);
+        let mut diagnostics = report_context
+            .get("image_format_diagnostics")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(value) = requested_output_format {
+            diagnostics.insert("requested_output_format".to_string(), value.into());
+        }
+        if let Some(value) = provider_request_output_format {
+            diagnostics.insert("provider_request_output_format".to_string(), value.into());
+        }
+        if !diagnostics.is_empty() {
+            report_context.insert(
+                "image_format_diagnostics".to_string(),
+                serde_json::Value::Object(diagnostics),
+            );
+        }
+    }
+
     Ok(Some(serde_json::Value::Object(report_context)))
+}
+
+fn known_image_output_format(value: &serde_json::Value) -> Option<&'static str> {
+    let value = value.as_str()?.trim();
+    if value.eq_ignore_ascii_case("png") {
+        Some("png")
+    } else if value.eq_ignore_ascii_case("jpeg") || value.eq_ignore_ascii_case("jpg") {
+        Some("jpeg")
+    } else if value.eq_ignore_ascii_case("webp") {
+        Some("webp")
+    } else if value.eq_ignore_ascii_case("svg") {
+        Some("svg")
+    } else if value.eq_ignore_ascii_case("gif") {
+        Some("gif")
+    } else {
+        None
+    }
 }
 
 fn decision_has_exact_provider_request(payload: &AiExecutionDecision) -> bool {
@@ -418,5 +467,35 @@ mod tests {
             report_context.get("provider_request_body").is_none(),
             "provider request body should not be copied into report context"
         );
+    }
+
+    #[test]
+    fn augment_sync_report_context_records_image_formats_without_copying_body() {
+        let report_context = augment_sync_report_context(
+            Some(serde_json::json!({
+                "image_request": {
+                    "requested_output_format": "svg",
+                    "output_format": "svg"
+                }
+            })),
+            &BTreeMap::new(),
+            &serde_json::json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "draw",
+                "output_format": "svg",
+                "n": 1
+            }),
+        )
+        .expect("context should serialize")
+        .expect("context should exist");
+
+        assert_eq!(
+            report_context["image_format_diagnostics"],
+            serde_json::json!({
+                "requested_output_format": "svg",
+                "provider_request_output_format": "svg"
+            })
+        );
+        assert!(report_context.get("provider_request_body").is_none());
     }
 }

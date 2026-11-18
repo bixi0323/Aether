@@ -2346,12 +2346,34 @@ async fn provider_query_execute_openai_image_test_candidate(
             upstream_is_stream,
         )
     };
-    let Some(provider_request_body) = provider_request_body else {
+    let Some(mut provider_request_body) = provider_request_body else {
         return Ok(provider_query_skipped_execution_outcome(
             request_body,
             "Provider request is outside the Codex Images contract",
         ));
     };
+    let Some(mut provider_request_body) =
+        crate::provider_transport::apply_standard_provider_request_body_rules_with_request_headers(
+            provider_request_body,
+            transport.endpoint.body_rules.as_ref(),
+            &request_body,
+            &parts.headers,
+        )
+    else {
+        return Ok(provider_query_skipped_execution_outcome(
+            request_body,
+            "Provider body rules failed to apply",
+        ));
+    };
+    if !crate::ai_serving::enforce_openai_image_svg_request_constraints(
+        &mut provider_request_body,
+        normalized_request.operation,
+    ) {
+        return Ok(provider_query_skipped_execution_outcome(
+            provider_request_body,
+            "Provider request violates the GPT-Image-2.6 SVG constraints",
+        ));
+    }
     let oauth_auth = state.resolve_local_oauth_header_auth(&transport).await?;
     let Some((auth_header, auth_value)) =
         crate::provider_transport::resolve_openai_image_auth(&transport).or(oauth_auth)

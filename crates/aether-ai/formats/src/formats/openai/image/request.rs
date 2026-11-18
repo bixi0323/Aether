@@ -769,7 +769,8 @@ pub fn project_openai_image_api_request_body(
             || projected.get("n").and_then(Value::as_u64).unwrap_or(1) != 1
             || projected.get("stream").and_then(Value::as_bool) == Some(true)
             || projected.contains_key("output_compression")
-            || projected.contains_key("partial_images"))
+            || projected.contains_key("partial_images")
+            || projected.contains_key("prompt_rewriter"))
     {
         return None;
     }
@@ -1128,6 +1129,65 @@ fn project_codex_openai_image_api_request_body_with_max_generation_count(
         );
     }
     Some(Value::Object(projected))
+}
+
+/// Applies the GPT-Image-2.6 SVG wire constraints to the final provider body.
+///
+/// Request projection normally runs before endpoint body rules. Re-checking the
+/// post-rule body prevents a rule from turning an edit, streaming request, or
+/// multi-image request into an invalid SVG request. SVG requests default to
+/// `n=1`, as required by the Image API.
+pub fn enforce_openai_image_svg_request_constraints(
+    body: &mut Value,
+    operation: OpenAiImageOperation,
+) -> bool {
+    let Some(object) = body.as_object_mut() else {
+        return false;
+    };
+    let Some(output_format_value) = object.get("output_format") else {
+        return true;
+    };
+    let Some(output_format) = output_format_value
+        .as_str()
+        .and_then(normalize_openai_image_output_format)
+    else {
+        return false;
+    };
+    if output_format != "svg" {
+        return true;
+    }
+
+    let Some(model) = non_empty_image_string(object.get("model")) else {
+        return false;
+    };
+    if openai_image_model_family(model) != OpenAiImageModelFamily::GptImage26
+        || operation != OpenAiImageOperation::Generate
+    {
+        return false;
+    }
+    if object.get("n").is_some_and(|value| !value.is_null() && value.as_u64() != Some(1)) {
+        return false;
+    }
+    object.insert("n".to_string(), Value::Number(Number::from(1)));
+    if object
+        .get("stream")
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false))
+        || object.get("partial_images").is_some_and(|value| !value.is_null())
+        || object
+            .get("output_compression")
+            .is_some_and(|value| !value.is_null())
+        || object
+            .get("prompt_rewriter")
+            .is_some_and(|value| !value.is_null())
+        || object
+            .get("response_format")
+            .is_some_and(|value| value.as_str() != Some("b64_json"))
+    {
+        return false;
+    }
+    object.insert("stream".to_string(), Value::Bool(false));
+    object.insert("output_format".to_string(), Value::String("svg".to_string()));
+    true
 }
 
 fn non_empty_image_string(value: Option<&Value>) -> Option<&str> {
@@ -2105,7 +2165,8 @@ mod tests {
     use super::{
         build_chatgpt_web_image_request_body, build_codex_openai_image_api_provider_request_body,
         build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
-        decode_multipart_body_base64_with_limit, find_multipart_boundary,
+        decode_multipart_body_base64_with_limit, enforce_openai_image_svg_request_constraints,
+        find_multipart_boundary,
         is_openai_image_stream_request, multipart_boundary, normalize_openai_image_quality,
         normalize_openai_image_request, normalize_openai_image_request_with_options,
         openai_image_operation_from_path, parse_multipart_fields,
@@ -2952,6 +3013,12 @@ mod tests {
             }),
             json!({
                 "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "prompt_rewriter": true,
+                "output_format": "svg"
+            }),
+            json!({
+                "model": "gpt-image-2.6-flare",
                 "prompt": "Edit an image",
                 "image": {"image_url": "data:image/png;base64,aW1hZ2U="},
                 "output_format": "svg"
@@ -2969,6 +3036,98 @@ mod tests {
                 10,
             )
             .is_none());
+        }
+    }
+
+    #[test]
+    fn final_svg_body_constraints_apply_after_provider_body_rules() {
+        let mut body = json!({
+            "model": "gpt-image-2.6-flare",
+            "prompt": "Generate a static logo",
+            "output_format": "svg"
+        });
+        assert!(enforce_openai_image_svg_request_constraints(
+            &mut body,
+            OpenAiImageOperation::Generate,
+        ));
+        assert_eq!(body["n"], 1);
+
+        for (mut invalid, operation) in [
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "n": 2,
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "stream": true,
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "partial_images": 1,
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "output_compression": 50,
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "prompt_rewriter": true,
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Edit an image",
+                    "images": [{"image_url": "https://example.test/image.png"}],
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Edit,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2",
+                    "prompt": "Generate a static logo",
+                    "output_format": "svg"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+            (
+                json!({
+                    "model": "gpt-image-2.6-flare",
+                    "prompt": "Generate a static logo",
+                    "output_format": "not-an-image-format"
+                }),
+                OpenAiImageOperation::Generate,
+            ),
+        ] {
+            assert!(!enforce_openai_image_svg_request_constraints(
+                &mut invalid,
+                operation,
+            ));
         }
     }
 

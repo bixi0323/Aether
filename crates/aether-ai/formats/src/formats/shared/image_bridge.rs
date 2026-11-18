@@ -3,7 +3,8 @@ use serde_json::{json, Map, Number, Value};
 use crate::formats::openai::image::{
     bounded_openai_image_revised_prompt, is_safe_openai_image_base64_payload,
     normalize_openai_image_output_format, openai_image_output_format_mime_type,
-    parse_safe_openai_image_data_url, safe_openai_image_mime_type,
+    openai_image_payload_format_from_base64, parse_safe_openai_image_data_url,
+    safe_openai_image_mime_type,
     sanitize_openai_image_source_url,
 };
 use crate::formats::shared::model_directives::extract_gemini_model_from_path;
@@ -326,9 +327,17 @@ fn standard_openai_image_response_output_format(
     report_context: Option<&Value>,
 ) -> Option<&'static str> {
     provider_body_json
-        .get("output_format")
-        .and_then(Value::as_str)
-        .and_then(normalize_openai_image_output_format)
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find_map(standard_openai_image_payload_output_format)
+        .or_else(|| {
+            provider_body_json
+                .get("output_format")
+                .and_then(Value::as_str)
+                .and_then(normalize_openai_image_output_format)
+        })
         .or_else(|| {
             provider_body_json
                 .get("data")
@@ -347,6 +356,18 @@ fn standard_openai_image_response_output_format(
                 .and_then(|request| request.get("output_format"))
                 .and_then(Value::as_str)
                 .and_then(normalize_openai_image_output_format)
+        })
+}
+
+fn standard_openai_image_payload_output_format(item: &Value) -> Option<&'static str> {
+    item.get("b64_json")
+        .and_then(Value::as_str)
+        .and_then(openai_image_payload_format_from_base64)
+        .or_else(|| {
+            item.get("url")
+                .and_then(Value::as_str)
+                .and_then(parse_data_url)
+                .and_then(|(_, payload)| openai_image_payload_format_from_base64(payload))
         })
 }
 
@@ -601,6 +622,13 @@ fn standard_openai_image_item_to_image_data(item: &Value) -> Option<Value> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .and_then(sanitize_openai_image_source_url);
+    let detected_output_format = b64_json
+        .and_then(openai_image_payload_format_from_base64)
+        .or_else(|| {
+            url.as_deref()
+                .and_then(parse_data_url)
+                .and_then(|(_, payload)| openai_image_payload_format_from_base64(payload))
+        });
 
     let mut image = Map::new();
     if let Some(b64_json) = b64_json {
@@ -615,10 +643,12 @@ fn standard_openai_image_item_to_image_data(item: &Value) -> Option<Value> {
         return None;
     }
 
-    if let Some(output_format) = object
-        .get("output_format")
-        .and_then(Value::as_str)
-        .and_then(normalize_openai_image_output_format)
+    if let Some(output_format) = detected_output_format.or_else(|| {
+        object
+            .get("output_format")
+            .and_then(Value::as_str)
+            .and_then(normalize_openai_image_output_format)
+    })
     {
         image.insert(
             "output_format".to_string(),
@@ -1111,6 +1141,7 @@ fn context_model(context: &Value) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use http::{Method, Request};
     use serde_json::{json, Value};
 
@@ -1403,6 +1434,30 @@ mod tests {
             converted["data"][0]["b64_json"],
             "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4="
         );
+    }
+
+    #[test]
+    fn standard_openai_image_bridge_prefers_payload_signature_over_stale_format() {
+        let payload = base64::engine::general_purpose::STANDARD
+            .encode(br#"<svg xmlns="http://www.w3.org/2000/svg"><circle cx="4" cy="4" r="4"/></svg>"#);
+        let converted = build_openai_image_response_from_standard_image_response(
+            &json!({
+                "created": 1779273523,
+                "model": "gpt-image-2.6-flare",
+                "output_format": "png",
+                "data": [{
+                    "b64_json": payload,
+                    "output_format": "png"
+                }]
+            }),
+            Some(&json!({
+                "image_request": {"operation": "generate", "output_format": "svg"}
+            })),
+        )
+        .expect("SVG bytes should survive the client projection");
+
+        assert_eq!(converted["output_format"], "svg");
+        assert_eq!(converted["data"][0]["output_format"], "svg");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod execution;
+mod image_diagnostics;
 
 pub(crate) use execution::{
     build_openai_image_sync_json_whitespace_heartbeat_stream,

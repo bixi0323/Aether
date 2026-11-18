@@ -243,12 +243,14 @@ pub use crate::formats::{
         resolve_sync_spec as resolve_gemini_files_sync_spec, LocalGeminiFilesSpec,
     },
     openai::image::{
+        openai_image_payload_format_from_base64,
         request::{
             build_chatgpt_web_image_request_body,
             build_codex_openai_image_api_provider_request_body,
             build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
             default_model_for_openai_image_operation, is_openai_image_stream_request,
-            normalize_openai_image_quality, normalize_openai_image_request,
+            enforce_openai_image_svg_request_constraints, normalize_openai_image_quality,
+            normalize_openai_image_request,
             normalize_openai_image_request_with_options, openai_image_operation_from_path,
             project_codex_openai_image_api_request_body, project_openai_image_api_request_body,
             resolve_requested_openai_image_model_for_request, ChatGptWebImageRequestError,

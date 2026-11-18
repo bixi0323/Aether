@@ -249,6 +249,28 @@ pub fn sanitize_usage_request_metadata_object(source: &Map<String, Value>) -> Op
     for key in ["model_id", "global_model_id", "global_model_name"] {
         insert_model_token(source, &mut target, key);
     }
+    if let Some(diagnostics) = source
+        .get("image_format_diagnostics")
+        .and_then(Value::as_object)
+    {
+        let mut projected = Map::new();
+        for key in [
+            "requested_output_format",
+            "provider_request_output_format",
+            "provider_response_output_format",
+            "provider_response_payload_format",
+        ] {
+            insert_known_string(
+                diagnostics,
+                &mut projected,
+                key,
+                sanitize_image_output_format,
+            );
+        }
+        if !projected.is_empty() {
+            target.insert("image_format_diagnostics".to_string(), Value::Object(projected));
+        }
+    }
     if let Some(dimensions) = source.get("dimensions").and_then(project_dimensions) {
         target.insert("dimensions".to_string(), dimensions);
     }
@@ -955,7 +977,7 @@ fn sanitize_image_quality(value: &str) -> Option<String> {
 }
 
 fn sanitize_image_output_format(value: &str) -> Option<String> {
-    known_lowercase(value, &["jpeg", "jpg", "png", "webp"])
+    known_lowercase(value, &["gif", "jpeg", "jpg", "png", "svg", "webp"])
 }
 
 fn project_billing_snapshot(value: &Value) -> Option<Value> {
@@ -1393,6 +1415,32 @@ mod tests {
         billing_multiplier_snapshot, preserve_usage_routing_group_snapshot,
         sanitize_usage_request_metadata, sanitize_usage_request_metadata_ref,
     };
+
+    #[test]
+    fn image_format_diagnostics_preserves_svg_and_response_payload_format() {
+        let projected = sanitize_usage_request_metadata(Some(json!({
+            "dimensions": {"image_output_format": "svg"},
+            "image_format_diagnostics": {
+                "requested_output_format": "svg",
+                "provider_request_output_format": "svg",
+                "provider_response_output_format": "png",
+                "provider_response_payload_format": "png",
+                "untrusted": "ignored"
+            }
+        })))
+        .expect("image diagnostics should project");
+
+        assert_eq!(projected["dimensions"]["image_output_format"], "svg");
+        assert_eq!(
+            projected["image_format_diagnostics"],
+            json!({
+                "requested_output_format": "svg",
+                "provider_request_output_format": "svg",
+                "provider_response_output_format": "png",
+                "provider_response_payload_format": "png"
+            })
+        );
+    }
 
     #[test]
     fn wallet_fallback_survives_sparse_video_completion_and_removes_plan_reservation() {

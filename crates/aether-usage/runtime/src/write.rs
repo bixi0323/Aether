@@ -3293,12 +3293,31 @@ fn apply_completed_image_dimensions(data: &mut UsageEventData) {
         if usage_dimension_string(data.request_metadata.as_ref(), dimension).is_some() {
             continue;
         }
+        if dimension == "image_output_format" {
+            if let Some(value) = usage_image_payload_output_format(data.request_metadata.as_ref())
+            {
+                set_usage_dimension_if_absent(data, dimension, json!(value));
+                continue;
+            }
+        }
         if let Some(value) = image_request_string(data.provider_request_body.as_ref(), request_key)
             .or_else(|| image_request_string(data.request_body.as_ref(), request_key))
         {
             set_usage_dimension_if_absent(data, dimension, json!(value));
         }
     }
+}
+
+fn usage_image_payload_output_format(metadata: Option<&Value>) -> Option<String> {
+    metadata
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("image_format_diagnostics"))
+        .and_then(Value::as_object)
+        .and_then(|diagnostics| diagnostics.get("provider_response_payload_format"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn usage_dimension_i64(metadata: Option<&Value>, key: &str) -> Option<i64> {
@@ -3639,6 +3658,7 @@ fn empty_to_none(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
+        apply_completed_image_dimensions,
         build_pending_usage_event_from_owned_seed, build_pending_usage_record,
         build_pending_usage_record_from_seed, build_stream_terminal_usage_event,
         build_streaming_usage_event_from_owned_seed, build_streaming_usage_record,
@@ -3663,6 +3683,37 @@ mod tests {
     use base64::Engine as _;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn completed_image_dimensions_prefer_actual_payload_format() {
+        let mut data = UsageEventData {
+            request_body: Some(json!({
+                "model": "gpt-image-2.6-flare",
+                "n": 1,
+                "size": "1024x1024",
+                "quality": "auto",
+                "output_format": "svg"
+            })),
+            request_metadata: Some(json!({
+                "image_format_diagnostics": {
+                    "requested_output_format": "svg",
+                    "provider_request_output_format": "svg",
+                    "provider_response_output_format": "png",
+                    "provider_response_payload_format": "png"
+                }
+            })),
+            ..UsageEventData::default()
+        };
+
+        apply_completed_image_dimensions(&mut data);
+
+        assert_eq!(
+            data.request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/dimensions/image_output_format")),
+            Some(&json!("png"))
+        );
+    }
 
     #[test]
     fn extracts_openai_usage_tokens() {

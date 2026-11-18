@@ -22,9 +22,9 @@ use crate::ai_serving::{
     build_chatgpt_web_image_request_body, build_codex_openai_image_api_provider_request_body,
     build_gemini_image_request_body_from_openai_image_request,
     build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
-    default_model_for_openai_image_operation, normalize_openai_image_request,
-    request_conversion_direct_auth, CandidateFailureDiagnostic, GatewayProviderTransportSnapshot,
-    PlannerAppState, RequestConversionKind,
+    default_model_for_openai_image_operation, enforce_openai_image_svg_request_constraints,
+    normalize_openai_image_request, request_conversion_direct_auth, CandidateFailureDiagnostic,
+    GatewayProviderTransportSnapshot, PlannerAppState, RequestConversionKind,
 };
 use crate::image_capabilities::openai_image_normalize_options_for_provider;
 use crate::AppState;
@@ -235,7 +235,7 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         transport.provider.provider_type.as_str(),
         provider_api_format,
     );
-    let Some(provider_request_body) =
+    let Some(mut provider_request_body) =
         apply_openai_image_provider_request_body_rules(
             provider_request_body,
             transport.endpoint.body_rules.as_ref(),
@@ -260,6 +260,27 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         .await;
         return None;
     };
+    if !enforce_openai_image_svg_request_constraints(
+        &mut provider_request_body,
+        normalized_request.operation,
+    ) {
+        mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+            state,
+            input,
+            trace_id,
+            candidate,
+            attempt.candidate_index,
+            &attempt.candidate_id,
+            "transport_body_rules_invalid_openai_image_svg_request",
+            CandidateFailureDiagnostic::body_rules_apply_failed(
+                spec_metadata.api_format,
+                spec_metadata.api_format,
+                "openai_image_svg_request_constraints",
+            ),
+        )
+        .await;
+        return None;
+    }
     let Some(mut provider_request_headers) = (if is_grok {
         build_grok_browser_headers(GrokHeaderInput {
             transport,
@@ -334,12 +355,24 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         .unwrap_or_default()
         .to_string();
 
+    let requested_output_format = normalized_request
+        .summary_json
+        .get("output_format")
+        .cloned();
     let mut input_summary = if is_chatgpt_web || is_grok {
         provider_request_body.clone()
     } else {
         normalized_request.summary_json.clone()
     };
     if !is_chatgpt_web && !is_grok {
+        if let (Some(requested_output_format), Some(summary)) =
+            (requested_output_format, input_summary.as_object_mut())
+        {
+            summary.insert(
+                "requested_output_format".to_string(),
+                requested_output_format,
+            );
+        }
         if let Some(output_format) = provider_request_body
             .get("output_format")
             .and_then(Value::as_str)
@@ -349,6 +382,10 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
             if let Some(summary) = input_summary.as_object_mut() {
                 summary.insert(
                     "output_format".to_string(),
+                    Value::String(output_format.to_string()),
+                );
+                summary.insert(
+                    "provider_request_output_format".to_string(),
                     Value::String(output_format.to_string()),
                 );
             }

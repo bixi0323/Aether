@@ -96,6 +96,8 @@ use crate::usage::{spawn_sync_report, submit_sync_report};
 use crate::video_tasks::VideoTaskSyncReportMode;
 use crate::{usage::GatewaySyncReportRequest, AppState, GatewayError};
 
+use super::image_diagnostics::attach_openai_image_response_format_diagnostics;
+
 #[path = "execution/policy.rs"]
 mod policy;
 #[path = "execution/response.rs"]
@@ -2967,6 +2969,9 @@ async fn execute_execution_runtime_sync_impl(
         return Ok(None);
     }
     let status_code = result.status_code;
+    if (200..300).contains(&status_code) {
+        attach_openai_image_response_format_diagnostics(&mut report_context, body_json.as_ref());
+    }
     let has_body_bytes = body_base64.is_some();
     if (200..300).contains(&status_code) {
         seed_kiro_sync_simulated_cache_enabled(state, &plan, &mut report_context).await;

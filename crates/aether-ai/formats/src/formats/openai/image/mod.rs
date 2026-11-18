@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use url::Url;
 
 pub mod request;
@@ -32,6 +33,54 @@ pub(crate) fn is_safe_openai_image_base64_payload(value: &str) -> bool {
     bytes[..first_padding.unwrap_or(bytes.len())]
         .iter()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
+}
+
+/// Detects the image format from a bounded prefix of a base64 payload.
+///
+/// Provider fields can be absent or stale, so response discovery uses the
+/// bytes themselves when they carry a recognizable signature. Only a short
+/// prefix is decoded; full image decoding remains outside the gateway path.
+pub fn openai_image_payload_format_from_base64(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    if !is_safe_openai_image_base64_payload(value) {
+        return None;
+    }
+    let prefix_len = value.len().min(8 * 1024);
+    let prefix_len = prefix_len - (prefix_len % 4);
+    let prefix = &value.as_bytes()[..prefix_len];
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(prefix)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(prefix))
+        .ok()?;
+    openai_image_payload_format(&decoded)
+}
+
+pub fn openai_image_payload_format(value: &[u8]) -> Option<&'static str> {
+    if value.len() >= 24 && value.starts_with(b"\x89PNG\r\n\x1a\n") && &value[12..16] == b"IHDR" {
+        return Some("png");
+    }
+    if value.len() >= 3 && value.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("jpeg");
+    }
+    if value.len() >= 12 && &value[..4] == b"RIFF" && &value[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    if value.len() >= 6 && (&value[..6] == b"GIF87a" || &value[..6] == b"GIF89a") {
+        return Some("gif");
+    }
+    let text = value.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(value);
+    let text = text
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .map(|start| &text[start..])
+        .unwrap_or_default();
+    if text
+        .windows(4)
+        .any(|window| window.eq_ignore_ascii_case(b"<svg"))
+    {
+        return Some("svg");
+    }
+    None
 }
 
 pub(crate) fn normalize_openai_image_output_format(value: &str) -> Option<&'static str> {
