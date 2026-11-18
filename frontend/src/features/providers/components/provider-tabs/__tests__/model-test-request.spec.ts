@@ -738,6 +738,24 @@ describe('extractModelTestResponsePreview', () => {
     ])
   })
 
+  it('uses the top-level OpenAI Images output format for SVG base64 previews', () => {
+    expect(extractModelTestImagePreviews({
+      created: 1779273523,
+      output_format: 'svg',
+      data: [
+        {
+          b64_json: 'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=',
+        },
+      ],
+    })).toEqual([
+      {
+        src: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=',
+        label: '图片 1',
+        source: 'base64',
+      },
+    ])
+  })
+
   it('falls back to response model when no text payload exists', () => {
     expect(extractModelTestResponsePreview({
       model: 'glm-4.5-air',

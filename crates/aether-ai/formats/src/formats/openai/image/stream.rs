@@ -945,6 +945,8 @@ fn image_chat_markdown(frame: &OpenAiImageChatFrame) -> String {
             "image/jpeg"
         }
         Some(value) if value.eq_ignore_ascii_case("webp") => "image/webp",
+        Some(value) if value.eq_ignore_ascii_case("svg") => "image/svg+xml",
+        Some(value) if value.eq_ignore_ascii_case("gif") => "image/gif",
         Some(value) if value.eq_ignore_ascii_case("png") => "image/png",
         _ => "image/png",
     };
@@ -1467,9 +1469,15 @@ pub fn maybe_build_openai_image_sync_finalize_product(
             })
         })
         .collect::<Vec<_>>();
+    let client_output_format = images
+        .first()
+        .and_then(|image| image.get("output_format"))
+        .and_then(Value::as_str)
+        .unwrap_or(default_output_format);
     let client_body_json = serde_json::json!({
         "created": created.unwrap_or_default(),
         "data": client_images,
+        "output_format": client_output_format,
         "usage": provider_body_json.get("usage").cloned().unwrap_or(Value::Null),
     });
 
@@ -1972,7 +1980,7 @@ mod tests {
             "provider_api_format": "openai:image",
             "image_request": {
                 "operation": "generate",
-                "output_format": "png"
+                "output_format": "svg"
             }
         });
         let body_base64 = base64::engine::general_purpose::STANDARD.encode(
@@ -1980,7 +1988,7 @@ mod tests {
                 "event: response.created\n",
                 "data: {\"type\":\"response.created\",\"response\":{\"created_at\":1776839946}}\n\n",
                 "event: response.output_item.done\n",
-                "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"output_format\":\"png\",\"revised_prompt\":\"revised history prompt\",\"result\":\"aGVsbG8=\"}}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"output_format\":\"svg\",\"revised_prompt\":\"revised history prompt\",\"result\":\"aGVsbG8=\"}}\n\n",
                 "event: response.completed\n",
                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_123\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"tool_usage\":{\"image_gen\":{\"input_tokens\":171,\"output_tokens\":1372,\"total_tokens\":1543}}}}\n\n"
             )
@@ -1999,6 +2007,7 @@ mod tests {
 
         assert_eq!(product.client_body_json["created"], 1776839946);
         assert_eq!(product.client_body_json["data"][0]["b64_json"], "aGVsbG8=");
+        assert_eq!(product.client_body_json["output_format"], "svg");
         assert_eq!(
             product.client_body_json["data"][0]["revised_prompt"],
             "revised history prompt"
@@ -2007,7 +2016,7 @@ mod tests {
         assert_eq!(product.provider_body_json["id"], "resp_img_123");
         assert_eq!(
             product.provider_body_json["output"][0]["output_format"],
-            "png"
+            "svg"
         );
         assert_eq!(
             product.provider_body_json["output"][0]["revised_prompt"],

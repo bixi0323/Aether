@@ -334,11 +334,26 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         .unwrap_or_default()
         .to_string();
 
-    let input_summary = if is_chatgpt_web || is_grok {
+    let mut input_summary = if is_chatgpt_web || is_grok {
         provider_request_body.clone()
     } else {
-        normalized_request.summary_json
+        normalized_request.summary_json.clone()
     };
+    if !is_chatgpt_web && !is_grok {
+        if let Some(output_format) = provider_request_body
+            .get("output_format")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some(summary) = input_summary.as_object_mut() {
+                summary.insert(
+                    "output_format".to_string(),
+                    Value::String(output_format.to_string()),
+                );
+            }
+        }
+    }
 
     Some(LocalOpenAiImageCandidatePayloadParts {
         transport: Arc::clone(transport),

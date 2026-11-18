@@ -649,7 +649,8 @@ pub fn project_openai_image_api_request_body(
         OpenAiImageModelFamily::DallE3 => Some(4_000),
         OpenAiImageModelFamily::GptImage
         | OpenAiImageModelFamily::GptImageMini
-        | OpenAiImageModelFamily::GptImage2 => Some(32_000),
+        | OpenAiImageModelFamily::GptImage2
+        | OpenAiImageModelFamily::GptImage26 => Some(32_000),
         OpenAiImageModelFamily::Other => None,
     };
     if max_prompt_chars.is_some_and(|limit| prompt.chars().count() > limit) {
@@ -696,7 +697,8 @@ pub fn project_openai_image_api_request_body(
                 OpenAiImageModelFamily::DallE2 => 1,
                 OpenAiImageModelFamily::GptImage
                 | OpenAiImageModelFamily::GptImageMini
-                | OpenAiImageModelFamily::GptImage2 => 16,
+                | OpenAiImageModelFamily::GptImage2
+                | OpenAiImageModelFamily::GptImage26 => 16,
                 OpenAiImageModelFamily::DallE3 => 0,
                 OpenAiImageModelFamily::Other => usize::MAX,
             };
@@ -735,6 +737,7 @@ pub fn project_openai_image_api_request_body(
             OpenAiImageModelFamily::GptImage
             | OpenAiImageModelFamily::GptImageMini
             | OpenAiImageModelFamily::GptImage2
+            | OpenAiImageModelFamily::GptImage26
             | OpenAiImageModelFamily::Other => canonical,
         };
         projected.insert("quality".to_string(), Value::String(wire.to_string()));
@@ -742,15 +745,17 @@ pub fn project_openai_image_api_request_body(
 
     let output_format = if let Some(value) = projected.get("output_format") {
         let value = non_empty_image_string(Some(value))?.to_ascii_lowercase();
-        if !matches!(value.as_str(), "png" | "jpeg" | "webp")
-            || !matches!(
-                model_family,
-                OpenAiImageModelFamily::GptImage
-                    | OpenAiImageModelFamily::GptImageMini
-                    | OpenAiImageModelFamily::GptImage2
-                    | OpenAiImageModelFamily::Other
-            )
-        {
+        let supported = match model_family {
+            OpenAiImageModelFamily::GptImage26 => {
+                matches!(value.as_str(), "png" | "jpeg" | "webp" | "svg")
+            }
+            OpenAiImageModelFamily::GptImage
+            | OpenAiImageModelFamily::GptImageMini
+            | OpenAiImageModelFamily::GptImage2
+            | OpenAiImageModelFamily::Other => matches!(value.as_str(), "png" | "jpeg" | "webp"),
+            OpenAiImageModelFamily::DallE2 | OpenAiImageModelFamily::DallE3 => false,
+        };
+        if !supported {
             return None;
         }
         projected.insert("output_format".to_string(), Value::String(value.clone()));
@@ -758,6 +763,16 @@ pub fn project_openai_image_api_request_body(
     } else {
         None
     };
+
+    if output_format.as_deref() == Some("svg")
+        && (operation != OpenAiImageOperation::Generate
+            || projected.get("n").and_then(Value::as_u64).unwrap_or(1) != 1
+            || projected.get("stream").and_then(Value::as_bool) == Some(true)
+            || projected.contains_key("output_compression")
+            || projected.contains_key("partial_images"))
+    {
+        return None;
+    }
 
     if let Some(value) = projected.get("response_format") {
         let value = non_empty_image_string(Some(value))?.to_ascii_lowercase();
@@ -767,7 +782,8 @@ pub fn project_openai_image_api_request_body(
         match model_family {
             OpenAiImageModelFamily::GptImage
             | OpenAiImageModelFamily::GptImageMini
-            | OpenAiImageModelFamily::GptImage2 => {
+            | OpenAiImageModelFamily::GptImage2
+            | OpenAiImageModelFamily::GptImage26 => {
                 if value != "b64_json" {
                     return None;
                 }
@@ -859,6 +875,7 @@ pub fn project_openai_image_api_request_body(
             }
             OpenAiImageModelFamily::GptImage
             | OpenAiImageModelFamily::GptImageMini
+            | OpenAiImageModelFamily::GptImage26
             | OpenAiImageModelFamily::Other => {}
         }
     }
@@ -911,6 +928,7 @@ enum OpenAiImageModelFamily {
     GptImage,
     GptImageMini,
     GptImage2,
+    GptImage26,
     DallE3,
     DallE2,
     Other,
@@ -919,7 +937,9 @@ enum OpenAiImageModelFamily {
 fn openai_image_model_family(model: &str) -> OpenAiImageModelFamily {
     let normalized = model.trim().to_ascii_lowercase();
     let model = normalized.rsplit('/').next().unwrap_or_default();
-    if model == "gpt-image-2" || model.starts_with("gpt-image-2-") {
+    if model == "gpt-image-2.6" || model.starts_with("gpt-image-2.6-") {
+        OpenAiImageModelFamily::GptImage26
+    } else if model == "gpt-image-2" || model.starts_with("gpt-image-2-") {
         OpenAiImageModelFamily::GptImage2
     } else if model == "gpt-image-1-mini" || model.starts_with("gpt-image-1-mini-") {
         OpenAiImageModelFamily::GptImageMini
@@ -972,7 +992,7 @@ fn openai_image_size_supported(family: OpenAiImageModelFamily, size: &str) -> bo
         OpenAiImageModelFamily::GptImage | OpenAiImageModelFamily::GptImageMini => {
             matches!(size, "auto" | "1024x1024" | "1536x1024" | "1024x1536")
         }
-        OpenAiImageModelFamily::GptImage2 => {
+        OpenAiImageModelFamily::GptImage2 | OpenAiImageModelFamily::GptImage26 => {
             size == "auto" || gpt_image_2_resolution_supported(size)
         }
         OpenAiImageModelFamily::Other => !size.is_empty(),
@@ -1047,6 +1067,7 @@ fn project_codex_openai_image_api_request_body_with_max_generation_count(
                 | "n"
                 | "quality"
                 | "size"
+                | "output_format"
                 | "images"
                 | "response_format"
                 | "stream"
@@ -1083,6 +1104,12 @@ fn project_codex_openai_image_api_request_body_with_max_generation_count(
         projected.insert("background".to_string(), Value::String(background));
     }
     projected.insert("model".to_string(), Value::String(model.to_string()));
+    if let Some(output_format) = optional_codex_image_enum(
+        object.get("output_format"),
+        &["png", "jpeg", "webp", "svg"],
+    )? {
+        projected.insert("output_format".to_string(), Value::String(output_format));
+    }
     if let Some(n) = object.get("n") {
         let n = n
             .as_u64()
@@ -1350,6 +1377,7 @@ fn normalize_output_format(value: Option<&str>) -> Option<Option<String>> {
         "png" => Some(Some("png".to_string())),
         "jpeg" | "jpg" => Some(Some("jpeg".to_string())),
         "webp" => Some(Some("webp".to_string())),
+        "svg" => Some(Some("svg".to_string())),
         _ => None,
     }
 }
@@ -2623,7 +2651,6 @@ mod tests {
         for unsupported in [
             json!({"mask": "data:image/png;base64,bWFzaw=="}),
             json!({"input_fidelity": "high"}),
-            json!({"output_format": "png"}),
             json!({"partial_images": 1}),
             json!({"response_format": "url"}),
             json!({"user": "user-123"}),
@@ -2880,6 +2907,104 @@ mod tests {
             10,
         )
         .is_none());
+    }
+
+    #[test]
+    fn image_api_projection_supports_gpt_image_2_6_svg_generation_constraints() {
+        let svg = project_openai_image_api_request_body(
+            &json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "n": 1,
+                "output_format": "svg"
+            }),
+            "gpt-image-2.6-flare",
+            OpenAiImageOperation::Generate,
+            10,
+        )
+        .expect("GPT Image 2.6 should accept SVG generation");
+        assert_eq!(svg["output_format"], "svg");
+
+        for invalid in [
+            json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "n": 2,
+                "output_format": "svg"
+            }),
+            json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "stream": true,
+                "output_format": "svg"
+            }),
+            json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "output_compression": 50,
+                "output_format": "svg"
+            }),
+            json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "partial_images": 1,
+                "output_format": "svg"
+            }),
+            json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Edit an image",
+                "image": {"image_url": "data:image/png;base64,aW1hZ2U="},
+                "output_format": "svg"
+            }),
+        ] {
+            let operation = if invalid.get("image").is_some() {
+                OpenAiImageOperation::Edit
+            } else {
+                OpenAiImageOperation::Generate
+            };
+            assert!(project_openai_image_api_request_body(
+                &invalid,
+                "gpt-image-2.6-flare",
+                operation,
+                10,
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn codex_image_projection_preserves_gpt_image_2_6_svg_output_format() {
+        let body = json!({
+            "model": "gpt-image-2.6-flare",
+            "prompt": "Generate a static logo",
+            "n": 1,
+            "output_format": "svg"
+        });
+        let projected = project_codex_openai_image_api_request_body(
+            &body,
+            OpenAiImageOperation::Generate,
+        )
+        .expect("Codex image projection should accept SVG output");
+        assert_eq!(projected["output_format"], "svg");
+    }
+
+    #[test]
+    fn normalized_gpt_image_2_6_svg_request_reaches_the_codex_provider_body() {
+        let parts = request_parts("/v1/images/generations", Some("application/json"));
+        let request = normalize_openai_image_request(
+            &parts,
+            &json!({
+                "model": "gpt-image-2.6-flare",
+                "prompt": "Generate a static logo",
+                "n": 1,
+                "output_format": "svg"
+            }),
+            None,
+        )
+        .expect("SVG request should normalize");
+        let body = build_codex_openai_image_api_provider_request_body(&request, None, false)
+            .expect("SVG request should reach the Codex provider body");
+        assert_eq!(body["output_format"], "svg");
     }
 
     #[test]

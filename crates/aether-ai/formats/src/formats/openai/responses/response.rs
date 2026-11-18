@@ -595,6 +595,7 @@ fn openai_responses_output_format_from_mime_type(mime_type: &str) -> String {
     match mime_type.trim().to_ascii_lowercase().as_str() {
         "image/jpeg" | "image/jpg" => "jpeg",
         "image/webp" => "webp",
+        "image/svg+xml" => "svg",
         "image/gif" => "gif",
         _ => "png",
     }

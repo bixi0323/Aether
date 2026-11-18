@@ -2,8 +2,9 @@ use serde_json::{json, Map, Number, Value};
 
 use crate::formats::openai::image::{
     bounded_openai_image_revised_prompt, is_safe_openai_image_base64_payload,
-    normalize_openai_image_output_format, parse_safe_openai_image_data_url,
-    safe_openai_image_mime_type, sanitize_openai_image_source_url,
+    normalize_openai_image_output_format, openai_image_output_format_mime_type,
+    parse_safe_openai_image_data_url, safe_openai_image_mime_type,
+    sanitize_openai_image_source_url,
 };
 use crate::formats::shared::model_directives::extract_gemini_model_from_path;
 
@@ -296,6 +297,15 @@ pub(crate) fn build_openai_image_response_from_standard_image_response(
     let mut response = Map::new();
     response.insert("created".to_string(), Value::Number(Number::from(created)));
     response.insert("data".to_string(), Value::Array(images));
+    if let Some(output_format) = standard_openai_image_response_output_format(
+        provider_body_json,
+        report_context,
+    ) {
+        response.insert(
+            "output_format".to_string(),
+            Value::String(output_format.to_string()),
+        );
+    }
     if let Some(model) = provider_body_json
         .get("model")
         .and_then(Value::as_str)
@@ -309,6 +319,35 @@ pub(crate) fn build_openai_image_response_from_standard_image_response(
         response.insert("usage".to_string(), usage.clone());
     }
     Some(Value::Object(response))
+}
+
+fn standard_openai_image_response_output_format(
+    provider_body_json: &Value,
+    report_context: Option<&Value>,
+) -> Option<&'static str> {
+    provider_body_json
+        .get("output_format")
+        .and_then(Value::as_str)
+        .and_then(normalize_openai_image_output_format)
+        .or_else(|| {
+            provider_body_json
+                .get("data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find_map(|item| {
+                    item.get("output_format")
+                        .and_then(Value::as_str)
+                        .and_then(normalize_openai_image_output_format)
+                })
+        })
+        .or_else(|| {
+            report_context
+                .and_then(|context| context.get("image_request"))
+                .and_then(|request| request.get("output_format"))
+                .and_then(Value::as_str)
+                .and_then(normalize_openai_image_output_format)
+        })
 }
 
 pub fn build_gemini_image_response_from_openai_image_response(
@@ -992,17 +1031,15 @@ fn output_format_from_mime_type(mime_type: &str) -> &'static str {
     match mime_type.trim().to_ascii_lowercase().as_str() {
         "image/jpeg" | "image/jpg" => "jpeg",
         "image/webp" => "webp",
+        "image/svg+xml" => "svg",
         _ => "png",
     }
 }
 
 fn mime_type_from_output_format(output_format: &str) -> String {
-    match normalize_openai_image_output_format(output_format) {
-        Some("jpeg") => "image/jpeg".to_string(),
-        Some("webp") => "image/webp".to_string(),
-        Some("png") | None => "image/png".to_string(),
-        Some(_) => "image/png".to_string(),
-    }
+    openai_image_output_format_mime_type(output_format)
+        .unwrap_or("image/png")
+        .to_string()
 }
 
 fn mime_type_from_url(url: &str) -> &'static str {
@@ -1310,6 +1347,7 @@ mod tests {
         let provider_body = json!({
             "created": 1779273523,
             "model": "gpt-image-2",
+            "output_format": "text/html",
             "data": [
                 {"url": "javascript:alert(1)"},
                 {"url": "data:text/html;base64,PGh0bWw+"},
@@ -1327,6 +1365,7 @@ mod tests {
         assert_eq!(converted["data"][0]["b64_json"], "aGVsbG8=");
         assert_eq!(converted["data"][0]["revised_prompt"], Value::Null);
         assert!(converted["data"][0].get("output_format").is_none());
+        assert!(converted.get("output_format").is_none());
         let serialized = serde_json::to_string(&converted).expect("json");
         assert!(!serialized.contains("javascript:"));
         assert!(!serialized.contains("text/html"));
@@ -1340,6 +1379,30 @@ mod tests {
         )
         .expect("bounded standard image response should convert");
         assert_eq!(bounded["data"].as_array().map(Vec::len), Some(64));
+    }
+
+    #[test]
+    fn standard_openai_image_bridge_preserves_svg_output_format() {
+        let converted = build_openai_image_response_from_standard_image_response(
+            &json!({
+                "created": 1779273523,
+                "model": "gpt-image-2.6-flare",
+                "output_format": "svg",
+                "data": [{
+                    "b64_json": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4="
+                }]
+            }),
+            Some(&json!({
+                "image_request": {"operation": "generate", "output_format": "svg"}
+            })),
+        )
+        .expect("SVG image response should survive the client projection");
+
+        assert_eq!(converted["output_format"], "svg");
+        assert_eq!(
+            converted["data"][0]["b64_json"],
+            "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4="
+        );
     }
 
     #[test]

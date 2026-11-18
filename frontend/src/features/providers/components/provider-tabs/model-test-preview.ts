@@ -143,12 +143,13 @@ function collectImagePreviews(
   previews: ModelTestImagePreview[],
   seen: Set<string>,
   depth: number,
+  inheritedOutputFormat?: string,
 ) {
   if (depth > 5 || previews.length >= MODEL_TEST_IMAGE_PREVIEW_MAX_ITEMS || value == null) return
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      collectImagePreviews(item, previews, seen, depth + 1)
+      collectImagePreviews(item, previews, seen, depth + 1, inheritedOutputFormat)
       if (previews.length >= MODEL_TEST_IMAGE_PREVIEW_MAX_ITEMS) return
     }
     return
@@ -156,7 +157,10 @@ function collectImagePreviews(
 
   if (!isJsonRecord(value)) return
 
-  collectImagePreviewFromRecord(value, previews, seen, depth)
+  const outputFormat = typeof value.output_format === 'string'
+    ? value.output_format
+    : inheritedOutputFormat
+  collectImagePreviewFromRecord(value, previews, seen, depth, outputFormat)
 
   const nestedValues = [
     value.response,
@@ -168,7 +172,7 @@ function collectImagePreviews(
     value.item,
   ]
   for (const nested of nestedValues) {
-    collectImagePreviews(nested, previews, seen, depth + 1)
+    collectImagePreviews(nested, previews, seen, depth + 1, outputFormat)
     if (previews.length >= MODEL_TEST_IMAGE_PREVIEW_MAX_ITEMS) return
   }
 }
@@ -178,15 +182,19 @@ function collectImagePreviewFromRecord(
   previews: ModelTestImagePreview[],
   seen: Set<string>,
   depth: number,
+  inheritedOutputFormat?: string,
 ) {
-  const mime = imageMimeFromRecord(value)
+  const mime = imageMimeFromRecord(value, inheritedOutputFormat)
 
   const imageUrl = value.image_url
   if (typeof imageUrl === 'string') {
     pushImagePreview(previews, seen, imageUrlToPreview(imageUrl, 'url'))
   } else if (isJsonRecord(imageUrl)) {
     pushImagePreview(previews, seen, imageUrlToPreview(imageUrl.url, 'url'))
-    pushImagePreview(previews, seen, base64ImageToPreview(imageUrl.b64_json, imageMimeFromRecord(imageUrl)))
+    pushImagePreview(previews, seen, base64ImageToPreview(
+      imageUrl.b64_json,
+      imageMimeFromRecord(imageUrl, inheritedOutputFormat),
+    ))
   }
 
   pushImagePreview(previews, seen, imageUrlToPreview(value.url, 'url'))
@@ -197,7 +205,7 @@ function collectImagePreviewFromRecord(
   }
 
   if (depth <= 4) {
-    collectImagePreviews(value.source, previews, seen, depth + 1)
+    collectImagePreviews(value.source, previews, seen, depth + 1, outputFormat)
   }
 }
 
@@ -254,12 +262,12 @@ function base64ImageToPreview(value: unknown, mime: string): ModelTestImagePrevi
   }
 }
 
-function imageMimeFromRecord(value: JsonRecord): string {
-  const outputFormat = value.output_format
-  if (typeof outputFormat === 'string') {
-    const normalized = outputFormat.trim().toLowerCase()
-    if (/^[a-z0-9.+-]+$/.test(normalized)) return `image/${normalized}`
-  }
+function imageMimeFromRecord(value: JsonRecord, inheritedOutputFormat?: string): string {
+  const outputFormat = typeof value.output_format === 'string'
+    ? value.output_format
+    : inheritedOutputFormat
+  const mimeFromOutputFormat = imageMimeFromOutputFormat(outputFormat)
+  if (mimeFromOutputFormat) return mimeFromOutputFormat
 
   const raw = [
     value.mime_type,
@@ -274,6 +282,15 @@ function imageMimeFromRecord(value: JsonRecord): string {
     if (/^image\/[a-z0-9.+-]+$/.test(normalized)) return normalized
   }
   return 'image/png'
+}
+
+function imageMimeFromOutputFormat(outputFormat: unknown): string | null {
+  if (typeof outputFormat !== 'string') return null
+  const normalized = outputFormat.trim().toLowerCase()
+  if (normalized === 'svg') return 'image/svg+xml'
+  if (normalized === 'jpg') return 'image/jpeg'
+  if (!/^[a-z0-9.+-]+$/.test(normalized)) return null
+  return `image/${normalized}`
 }
 
 function extractResponseReasoning(responseBody: unknown, depth = 0): string | null {

@@ -406,6 +406,7 @@ fn openai_image_output_format_to_mime_type(output_format: &str) -> String {
     match output_format.trim().to_ascii_lowercase().as_str() {
         "jpeg" | "jpg" => "image/jpeg",
         "webp" => "image/webp",
+        "svg" => "image/svg+xml",
         "gif" => "image/gif",
         _ => "image/png",
     }

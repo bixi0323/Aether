@@ -14,8 +14,8 @@ use crate::formats::openai::chat::stream::{
 };
 use crate::formats::openai::image::{
     bounded_openai_image_revised_prompt, is_safe_openai_image_base64_payload,
-    normalize_openai_image_output_format, parse_safe_openai_image_data_url,
-    sanitize_openai_image_source_url,
+    normalize_openai_image_output_format, openai_image_output_format_mime_type,
+    parse_safe_openai_image_data_url, sanitize_openai_image_source_url,
 };
 use crate::formats::openai::responses::history::{
     record_converted_response_history, ResponseHistoryRecord,
@@ -692,14 +692,9 @@ fn image_request_quality(report_context: Option<&Value>) -> Option<String> {
 }
 
 fn mime_type_from_image_output_format(output_format: &str) -> String {
-    match output_format.trim() {
-        value if value.eq_ignore_ascii_case("jpg") || value.eq_ignore_ascii_case("jpeg") => {
-            "image/jpeg".to_string()
-        }
-        value if value.eq_ignore_ascii_case("webp") => "image/webp".to_string(),
-        value if value.eq_ignore_ascii_case("png") => "image/png".to_string(),
-        _ => "image/png".to_string(),
-    }
+    openai_image_output_format_mime_type(output_format)
+        .unwrap_or("image/png")
+        .to_string()
 }
 
 fn normalize_api_format(value: &str) -> String {

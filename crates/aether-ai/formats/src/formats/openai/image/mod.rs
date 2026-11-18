@@ -42,8 +42,23 @@ pub(crate) fn normalize_openai_image_output_format(value: &str) -> Option<&'stat
         Some("jpeg")
     } else if value.eq_ignore_ascii_case("webp") {
         Some("webp")
+    } else if value.eq_ignore_ascii_case("svg") {
+        Some("svg")
+    } else if value.eq_ignore_ascii_case("gif") {
+        Some("gif")
     } else {
         None
+    }
+}
+
+pub(crate) fn openai_image_output_format_mime_type(value: &str) -> Option<&'static str> {
+    match normalize_openai_image_output_format(value)? {
+        "png" => Some("image/png"),
+        "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "gif" => Some("image/gif"),
+        _ => None,
     }
 }
 
