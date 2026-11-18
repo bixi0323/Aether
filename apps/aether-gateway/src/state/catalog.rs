@@ -1915,4 +1915,24 @@ mod tests {
         assert!(updated);
         assert!(state.candidate_page_cache.get(&cache_key, ttl).is_some());
     }
+
+    #[test]
+    fn provider_health_invalidation_keeps_topology_only_candidate_cache() {
+        let repository = Arc::new(ClearCountingCandidateSelectionReadRepository::default());
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                GatewayDataState::with_minimal_candidate_selection_reader_for_tests(
+                    repository.clone(),
+                ),
+            );
+
+        state.invalidate_provider_health_routing_caches();
+
+        assert_eq!(
+            repository.clear_count(),
+            0,
+            "runtime health writes must not cancel topology-only candidate loads"
+        );
+    }
 }
