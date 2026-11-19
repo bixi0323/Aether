@@ -1828,6 +1828,23 @@ fn request_extension_key_is_cross_format_safe(
     {
         return true;
     }
+    // Responses text blocks may carry output-only citation annotations from a
+    // previous assistant turn. Chat request history has no portable equivalent,
+    // so keep the text and consume this display metadata instead of rejecting
+    // the whole DeepSeek request.
+    if location == "messages[].content[]"
+        && key == "annotations"
+        && matches!(
+            (source, target, namespace),
+            (
+                FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact,
+                FormatId::OpenAiChat,
+                "openai_responses" | "openai_cli",
+            )
+        )
+    {
+        return true;
+    }
     if location == "messages[].content[]"
         && matches!(
             (source, target, namespace, key),
@@ -5454,6 +5471,46 @@ mod tests {
         assert_eq!(pure, runtime);
         assert_eq!(pure["messages"][0]["content"], "hello");
         assert!(!pure.to_string().contains("item_type"));
+    }
+
+    #[test]
+    fn openai_responses_output_annotations_are_ignored_for_chat_requests() {
+        let body = json!({
+            "model": "deepseek-flash",
+            "input": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "The current UTC time is available from time.gov.",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://time.gov/",
+                        "title": "time.gov",
+                        "start_index": 39,
+                        "end_index": 47
+                    }]
+                }]
+            }]
+        });
+
+        let pure = convert_request_pure("openai:responses", "openai:chat", &body)
+            .expect("Responses citation metadata should not block Chat conversion")
+            .value;
+        let runtime = convert_request(
+            "openai:responses",
+            "openai:chat",
+            &body,
+            &FormatContext::default(),
+        )
+        .expect("runtime Responses citation metadata should not block Chat conversion");
+
+        assert_eq!(pure, runtime);
+        assert_eq!(
+            pure["messages"][0]["content"],
+            "The current UTC time is available from time.gov."
+        );
+        assert!(!pure.to_string().contains("annotations"));
     }
 
     #[test]
