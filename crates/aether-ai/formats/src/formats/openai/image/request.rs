@@ -1135,9 +1135,10 @@ fn project_codex_openai_image_api_request_body_with_max_generation_count(
 /// Applies the GPT-Image-2.6 SVG wire constraints to the final provider body.
 ///
 /// Request projection normally runs before endpoint body rules. Re-checking the
-/// post-rule body prevents a rule from turning an edit, streaming request, or
-/// multi-image request into an invalid SVG request. SVG requests default to
-/// `n=1`, as required by the Image API.
+/// post-rule body prevents a rule from turning a streaming or multi-image
+/// generation request into an invalid SVG request. Endpoint-wide SVG rules are
+/// ignored for edits so the upstream default image format can be used. SVG
+/// generation requests default to `n=1`, as required by the Image API.
 pub fn enforce_openai_image_svg_request_constraints(
     body: &mut Value,
     operation: OpenAiImageOperation,
@@ -1157,13 +1158,15 @@ pub fn enforce_openai_image_svg_request_constraints(
     if output_format != "svg" {
         return true;
     }
+    if operation != OpenAiImageOperation::Generate {
+        object.remove("output_format");
+        return true;
+    }
 
     let Some(model) = non_empty_image_string(object.get("model")) else {
         return false;
     };
-    if openai_image_model_family(model) != OpenAiImageModelFamily::GptImage26
-        || operation != OpenAiImageOperation::Generate
-    {
+    if openai_image_model_family(model) != OpenAiImageModelFamily::GptImage26 {
         return false;
     }
     if object.get("n").is_some_and(|value| !value.is_null() && value.as_u64() != Some(1)) {
@@ -3101,15 +3104,6 @@ mod tests {
             ),
             (
                 json!({
-                    "model": "gpt-image-2.6-flare",
-                    "prompt": "Edit an image",
-                    "images": [{"image_url": "https://example.test/image.png"}],
-                    "output_format": "svg"
-                }),
-                OpenAiImageOperation::Edit,
-            ),
-            (
-                json!({
                     "model": "gpt-image-2",
                     "prompt": "Generate a static logo",
                     "output_format": "svg"
@@ -3130,6 +3124,18 @@ mod tests {
                 operation,
             ));
         }
+
+        let mut edit = json!({
+            "model": "gpt-image-2.6-flare",
+            "prompt": "Edit an image",
+            "images": [{"image_url": "https://example.test/image.png"}],
+            "output_format": "svg"
+        });
+        assert!(enforce_openai_image_svg_request_constraints(
+            &mut edit,
+            OpenAiImageOperation::Edit,
+        ));
+        assert!(edit.get("output_format").is_none());
     }
 
     #[test]
