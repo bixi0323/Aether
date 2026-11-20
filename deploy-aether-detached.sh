@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FEATURE_VERIFY_SCRIPT="$SCRIPT_DIR/scripts/verify-image-frontend-features.sh"
+
 PROJECT_DIR="${PROJECT_DIR:-/opt/aether}"
 NEW_IMAGE="${NEW_IMAGE:?NEW_IMAGE is required}"
 COMPOSE_BASE="${COMPOSE_BASE:-docker-compose.yml}"
@@ -123,6 +126,9 @@ else
   echo "Using local image without pulling: $NEW_IMAGE"
 fi
 docker image inspect "$NEW_IMAGE" >/dev/null
+
+echo "Verifying required API key analytics in the candidate image"
+"$FEATURE_VERIFY_SCRIPT" "$NEW_IMAGE"
 
 echo "Running database migrations before switching the application"
 deploy_compose run --rm --no-deps --pull never -T app --migrate

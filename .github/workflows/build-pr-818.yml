@@ -13,6 +13,7 @@ env:
 
 jobs:
   build:
+    if: github.ref_name == 'codex/aether-deploy-baseline'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -33,6 +34,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify required frontend source features
+        run: |
+          set -euo pipefail
+          test -f frontend/src/features/usage/components/UsageApiKeyTable.vue
+          grep -Fq 'data-testid="usage-api-key-analysis"' \
+            frontend/src/features/usage/components/UsageApiKeyTable.vue
+          grep -Fq '<UsageApiKeyTable' frontend/src/views/shared/Usage.vue
+          grep -Fq '"ui.byApiKeyAnalysis"' frontend/src/i18n/ui-messages.ts
+          grep -Fq '/api/admin/stats/leaderboard/api-keys' frontend/src/api/usage.ts
+
       - name: Patch Dockerfile for GitHub runners
         run: |
           set -euo pipefail
@@ -46,12 +57,13 @@ jobs:
             frontend/package-lock.json
           head -40 Dockerfile.app.local
 
-      - name: Build and push
+      - name: Build candidate image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.app.local
-          push: true
+          push: false
+          load: true
           tags: |
             ${{ env.IMAGE }}:${{ env.TAG }}
             ${{ env.IMAGE }}:${{ env.TAG }}-${{ github.sha }}
@@ -61,3 +73,17 @@ jobs:
             RUST_BASE_IMAGE=rust:1.95.0-slim
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify candidate image contains required features
+        env:
+          CANDIDATE_IMAGE: ${{ env.IMAGE }}:${{ env.TAG }}-${{ github.sha }}
+        run: ./scripts/verify-image-frontend-features.sh "$CANDIDATE_IMAGE"
+
+      - name: Publish verified image
+        env:
+          IMMUTABLE_IMAGE: ${{ env.IMAGE }}:${{ env.TAG }}-${{ github.sha }}
+          MUTABLE_IMAGE: ${{ env.IMAGE }}:${{ env.TAG }}
+        run: |
+          set -euo pipefail
+          docker push "$IMMUTABLE_IMAGE"
+          docker push "$MUTABLE_IMAGE"
